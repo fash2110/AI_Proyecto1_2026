@@ -2,3 +2,5 @@
 
 archive/
 archive_img/
+best_model_a_raw.pth
+model_a_raw_metrics.json
