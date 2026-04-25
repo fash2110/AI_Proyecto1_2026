@@ -1,33 +1,31 @@
 package com.example.smarthomeapp
 
 import android.os.Bundle
+import android.speech.tts.Voice
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.material3.*
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CardDefaults
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
 import com.example.smarthomeapp.ui.theme.SmartHomeAppTheme
+import kotlinx.coroutines.delay
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,7 +38,33 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/* ---------------- NAVIGATION ---------------- */
+suspend fun runVoiceDemo(
+    navigationManager: NavigationManager,
+    onAction: (NavigationAction) -> Unit
+) {
+    val commands = listOf(
+        VoiceCommand.RIGHT,
+        VoiceCommand.DOWN,
+        VoiceCommand.LEFT,
+        VoiceCommand.DOWN,
+        VoiceCommand.ON,
+        VoiceCommand.UP,
+        VoiceCommand.RIGHT,
+        VoiceCommand.OFF,
+        VoiceCommand.LEFT,
+        VoiceCommand.OFF
+    )
+
+    for (command in commands) {
+        val action = navigationManager.handle(command)
+
+        if (action != null) {
+            onAction(action)
+        }
+
+        delay(3000)
+    }
+}
 
 enum class AppDestinations(
     val label: String,
@@ -50,15 +74,139 @@ enum class AppDestinations(
     ROUTINES("Routines", R.drawable.ic_routines)
 }
 
+data class Device(
+    val name: String,
+    val description: String,
+    var isOn: Boolean
+)
+
+@Composable
+fun SmartHomeAppApp() {
+    val navigationManager = remember { NavigationManager(columns = 2) }
+
+    var currentDestination by rememberSaveable {
+        mutableStateOf(AppDestinations.DEVICES)
+    }
+
+    var isListening by remember {
+        mutableStateOf(false)
+    }
+
+    var devices by remember {
+        mutableStateOf(
+            listOf(
+                Device("Lights", "Living room & bedrooms", true),
+                Device("Fan", "Air circulation", false),
+                Device("TV", "Media screen", false),
+                Device("Kitchen", "Kitchen devices", true),
+                Device("Garage", "Garage lights", false),
+                Device("Bedroom", "Bedroom AC", true)
+            )
+        )
+    }
+
+    LaunchedEffect(devices.size) {
+        navigationManager.updateDeviceCount(devices.size)
+    }
+
+    //Demo de acciones del cursor
+    LaunchedEffect(Unit) {
+        runVoiceDemo(navigationManager) { action ->
+
+            when (action) {
+
+                is NavigationAction.TurnDeviceOn -> {
+                    devices = devices.mapIndexed { index, device ->
+                        if (index == action.index)
+                            device.copy(isOn = true)
+                        else
+                            device
+                    }
+                }
+
+                is NavigationAction.TurnDeviceOff -> {
+                    devices = devices.mapIndexed { index, device ->
+                        if (index == action.index)
+                            device.copy(isOn = false)
+                        else
+                            device
+                    }
+                }
+
+                is NavigationAction.NavigateDevices -> {
+                    currentDestination = AppDestinations.DEVICES
+                }
+
+                is NavigationAction.NavigateRoutines -> {
+                    currentDestination = AppDestinations.ROUTINES
+                }
+
+                is NavigationAction.SelectListening -> {
+                    isListening = !isListening
+                }
+
+                is NavigationAction.SelectDevice -> {
+                    devices = devices.mapIndexed { index, device ->
+                        if (index == action.index)
+                            device.copy(isOn = !device.isOn)
+                        else
+                            device
+                    }
+                }
+
+                is NavigationAction.StartRoutine -> {
+                    println("Start routine ${action.index}")
+                }
+
+                is NavigationAction.StopRoutine -> {
+                    println("Stop routine ${action.index}")
+                }
+            }
+        }
+    }
+
+    Scaffold(
+        bottomBar = {
+            BottomBar(
+                currentDestination = currentDestination,
+                onNavigate = { currentDestination = it },
+                isListening = isListening,
+                onToggleListening = { isListening = !isListening },
+                navigationManager = navigationManager
+            )
+        }
+    ) { innerPadding ->
+        when (currentDestination) {
+            AppDestinations.DEVICES -> DevicesScreen(
+                modifier = Modifier.padding(innerPadding),
+                devices = devices,
+                navigationManager = navigationManager,
+                onToggleDevice = { clicked ->
+                    devices = devices.map {
+                        if (it.name == clicked.name)
+                            it.copy(isOn = !it.isOn)
+                        else it
+                    }
+                }
+            )
+
+            AppDestinations.ROUTINES -> RoutinesScreen(
+                Modifier.padding(innerPadding)
+            )
+        }
+    }
+}
+
 @Composable
 fun ListeningIndicator(
     isListening: Boolean,
+    isFocused: Boolean,
     onClick: () -> Unit
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "")
+    val transition = rememberInfiniteTransition(label = "")
 
-    val barHeights = List(3) { index ->
-        infiniteTransition.animateFloat(
+    val heights = List(3) { index ->
+        transition.animateFloat(
             initialValue = 6f,
             targetValue = 24f,
             animationSpec = infiniteRepeatable(
@@ -76,24 +224,27 @@ fun ListeningIndicator(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .clickable { onClick() }
+            .border(
+                width = if (isFocused) 2.dp else 0.dp,
+                color = Color.Cyan,
+                shape = RoundedCornerShape(12.dp)
+            )
             .padding(8.dp)
     ) {
-
         Row(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.Bottom
         ) {
             repeat(3) { index ->
-                val height = if (isListening) {
-                    barHeights[index].value.dp
-                } else {
-                    6.dp
-                }
-
                 Box(
                     modifier = Modifier
                         .width(4.dp)
-                        .height(height)
+                        .height(
+                            if (isListening)
+                                heights[index].value.dp
+                            else
+                                6.dp
+                        )
                         .background(
                             if (isListening) Color.White else Color.Gray,
                             RoundedCornerShape(2.dp)
@@ -102,12 +253,12 @@ fun ListeningIndicator(
             }
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(Modifier.height(4.dp))
 
         Text(
-            text = if (isListening) "listening" else "tap to listen",
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.LightGray
+            if (isListening) "listening" else "tap to listen",
+            color = Color.LightGray,
+            style = MaterialTheme.typography.labelSmall
         )
     }
 }
@@ -117,44 +268,47 @@ fun BottomBar(
     currentDestination: AppDestinations,
     onNavigate: (AppDestinations) -> Unit,
     isListening: Boolean,
-    onToggleListening: () -> Unit
+    onToggleListening: () -> Unit,
+    navigationManager: NavigationManager
 ) {
-    NavigationBar(containerColor = Color(0xFF1A1F2E)) {
+    val focusedBottom = navigationManager.focusedBottomBarIndex()
 
-        // Devices
+    NavigationBar(
+        containerColor = Color(0xFF1A1F2E)
+    ) {
+
         NavigationBarItem(
             selected = currentDestination == AppDestinations.DEVICES,
             onClick = { onNavigate(AppDestinations.DEVICES) },
             icon = {
                 Icon(
                     painterResource(R.drawable.ic_home),
-                    contentDescription = "Devices"
+                    "Devices",
+                    tint = if (focusedBottom == 0) Color.Cyan else Color.White
                 )
             },
             label = { Text("Devices") }
         )
 
-        // Indicador de escuchando
         Box(
-            modifier = Modifier
-                .weight(1f)
-                .padding(top = 8.dp),
+            modifier = Modifier.weight(1f),
             contentAlignment = Alignment.Center
         ) {
             ListeningIndicator(
                 isListening = isListening,
+                isFocused = focusedBottom == 1,
                 onClick = onToggleListening
             )
         }
 
-        // Routines
         NavigationBarItem(
             selected = currentDestination == AppDestinations.ROUTINES,
             onClick = { onNavigate(AppDestinations.ROUTINES) },
             icon = {
                 Icon(
                     painterResource(R.drawable.ic_routines),
-                    contentDescription = "Routines"
+                    "Routines",
+                    tint = if (focusedBottom == 2) Color.Cyan else Color.White
                 )
             },
             label = { Text("Routines") }
@@ -163,50 +317,13 @@ fun BottomBar(
 }
 
 @Composable
-fun SmartHomeAppApp() {
-    var currentDestination by rememberSaveable { mutableStateOf(AppDestinations.DEVICES) }
-    var isListening by remember {mutableStateOf(false)}
-
-    Scaffold(
-        bottomBar = {
-            BottomBar(
-                currentDestination = currentDestination,
-                onNavigate = { currentDestination = it },
-                isListening = isListening,
-                onToggleListening = {isListening = !isListening}
-            )
-        }
-    ) { innerPadding ->
-        when (currentDestination) {
-            AppDestinations.DEVICES -> DevicesScreen(Modifier.padding(innerPadding))
-            AppDestinations.ROUTINES -> RoutinesScreen(Modifier.padding(innerPadding))
-        }
-    }
-}
-
-/* ---------------- DATA MODEL ---------------- */
-
-data class Device(
-    val name: String,
-    val description: String,
-    var isOn: Boolean
-)
-
-/* ---------------- DEVICES SCREEN ---------------- */
-
-@Composable
-fun DevicesScreen(modifier: Modifier = Modifier) {
-
-    var devices by remember {
-        mutableStateOf(
-            listOf(
-                Device("Lights", "Living room & bedrooms", true),
-                Device("Fan", "Air circulation", false),
-                Device("TV", "Media screen", false),
-                Device("Routines", "Scenes & automations", true)
-            )
-        )
-    }
+fun DevicesScreen(
+    modifier: Modifier = Modifier,
+    devices: List<Device>,
+    navigationManager: NavigationManager,
+    onToggleDevice: (Device) -> Unit
+) {
+    val focusedIndex = navigationManager.focusedDeviceIndex()
 
     Column(
         modifier = modifier
@@ -214,69 +331,56 @@ fun DevicesScreen(modifier: Modifier = Modifier) {
             .background(Color(0xFF0B1220))
             .padding(16.dp)
     ) {
-
         Text(
-            text = "Home Dashboard",
+            "Home Dashboard",
             style = MaterialTheme.typography.headlineMedium,
             color = Color.White
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
 
         LazyVerticalGrid(
             columns = GridCells.Fixed(2),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(devices) { device ->
-
+            itemsIndexed(devices) { index, device ->
                 DeviceCard(
                     device = device,
-                    onToggle = {
-                        devices = devices.map {
-                            if (it.name == device.name) {
-                                it.copy(isOn = !it.isOn)
-                            } else it
-                        }
-                    }
+                    isFocused = focusedIndex == index,
+                    onToggle = { onToggleDevice(device) }
                 )
             }
         }
     }
 }
 
-/* ---------------- DEVICE CARD ---------------- */
-
 @Composable
-fun DeviceCard(device: Device, onToggle: () -> Unit) {
-
+fun DeviceCard(
+    device: Device,
+    isFocused: Boolean,
+    onToggle: () -> Unit
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = if (isFocused) 2.dp else 0.dp,
+                color = Color.Cyan,
+                shape = RoundedCornerShape(20.dp)
+            ),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (device.isOn)
-                Color(0xFF1C2A3A)
-            else
-                Color(0xFF151B2C)
+            containerColor =
+                if (device.isOn) Color(0xFF1C2A3A)
+                else Color(0xFF151B2C)
         )
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(device.name, color = Color.White)
+            Text(device.description, color = Color.Gray)
 
-            Text(
-                text = device.name,
-                style = MaterialTheme.typography.titleMedium,
-                color = Color.White
-            )
-
-            Text(
-                text = device.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(Modifier.height(12.dp))
 
             Switch(
                 checked = device.isOn,
@@ -286,48 +390,21 @@ fun DeviceCard(device: Device, onToggle: () -> Unit) {
     }
 }
 
-/* ---------------- ROUTINES SCREEN ---------------- */
-
 @Composable
 fun RoutinesScreen(modifier: Modifier = Modifier) {
-
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF0B1220))
             .padding(16.dp)
     ) {
-
         Text(
-            text = "Routines",
+            "Routines",
             style = MaterialTheme.typography.headlineMedium,
             color = Color.White
         )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        RoutineItem("Morning Routine")
-        RoutineItem("Sleep Routine")
-        RoutineItem("Welcome Home")
     }
 }
-
-@Composable
-fun RoutineItem(name: String) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Text(
-            text = name,
-            modifier = Modifier.padding(16.dp)
-        )
-    }
-}
-
-/* ---------------- PREVIEW ---------------- */
 
 @Preview(showBackground = true)
 @Composable
