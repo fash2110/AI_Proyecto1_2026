@@ -1,0 +1,8 @@
+.venv/
+.venv-1/
+Dataset/
+cache_mels/
+cache_mels_full/
+.DS_Store
+__pycache__/
+*.pyc
