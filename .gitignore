@@ -2,8 +2,12 @@
 
 archive/
 archive_img/
+archive_img_augment/
 best_model_a_raw.pth
 model_a_raw_metrics.json
+best_model_a_augmented.pth
+wandb/
+*.pth
 .venv/
 .venv-1/
 Dataset/
