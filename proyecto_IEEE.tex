@@ -42,7 +42,15 @@ Email: Fer.sanchez@estudiantec.cr}}
 \subsection{Control de Aleatoriedad y Reproducibilidad}
 Para garantizar la reproducibilidad de los experimentos, se implementó un estricto control de aleatoriedad. Se definió una semilla global (\textit{seed} $= 42$) utilizada para inicializar los generadores de números pseudoaleatorios de las librerías \texttt{random}, \texttt{numpy} y \texttt{torch}. Adicionalmente, se configuró el comportamiento determinista de cuDNN desactivando el \textit{benchmark} dinámico donde fuera necesario.
 
-\subsection{Modelo A: Datos Crudos (LeNet-5 Adaptado)}
+\subsection{Selección de Técnicas de Aumentación de Datos}
+Para mejorar la capacidad de generalización de los modelos y simular condiciones realistas de entorno (ruido de fondo, variabilidad de hablantes), se aplicaron técnicas de aumento de datos (\textit{data augmentation}) en el preprocesamiento de audio. Las técnicas se inspiraron en métodos avanzados de aumento espectral y en el dominio del tiempo:
+\begin{itemize}
+    \item \textbf{Time Shift:} Desplazamiento temporal aleatorio para que el sistema aprenda predicciones invariantes al milisegundo exacto de reproducción, alineándose directamente con aplicaciones reales bajo ruidos dispares.
+    \item \textbf{Ruido Blanco (White Noise):} Inyectado progresivamente para simular grabaciones en ambientes no controlados y servir de fuerte regularización matemática de los tensores.
+    \item \textbf{SpecAugment \cite{specaugment}:} Enmascaramiento de bloques de frecuencias y tiempo directamente sobre el mel-espectrograma para forzar a la red neuronal a no depender de características auditivas frágiles y lograr márgenes más robustos.
+\end{itemize}
+
+\subsection{Modelo A: LeNet-5 Adaptado}
 El Modelo A está basado en la arquitectura clásica de LeNet-5, pero fue adaptado específicamente para el procesamiento de mel-espectrogramas.
 
 \subsubsection{Justificación de modificaciones}
@@ -89,79 +97,284 @@ Flatten Final & $(B, 10)$ \\
 Se utilizó \textit{Cross-Entropy Loss} como función de pérdida, la cual es ideal para clasificación multiclase. El optimizador seleccionado fue \texttt{Adam} con una tasa de aprendizaje de $1 \times 10^{-3}$ y \textit{weight decay} de $1 \times 10^{-4}$ para mitigar el sobreajuste. Además, se empleó un \textit{scheduler} (\texttt{ReduceLROnPlateau}) que reduce la tasa de aprendizaje a la mitad si la precisión de validación no mejora en 3 épocas. Las rutinas de entrenamiento se ejecutaron usando precisión mixta nativa (\texttt{torch.amp}).
 
 
-\section{Análisis y comparación de resultados}
+\subsection{Modelo B: MobileNetV2 Adaptado}
+El Modelo B está basado en la arquitectura de MobileNetV2, reconocida por su alta eficiencia y bajo consumo de parámetros en dispositivos móviles. Esta red fue programada de manera estructurada y adaptada específicamente para la clasificación de audio mediante espectrogramas de Mel.
 
-\subsection{Modelo A: Datos crudos}
-
-El Modelo A actual —con la arquitectura LeNet-5 adaptada a mel-espectrogramas, activaciones \texttt{Tanh} y un clasificador 100\% convolucional— alcanzó los siguientes resultados en la evaluación final del conjunto de prueba:
-
+\subsubsection{Justificación de modificaciones}
+Se instrumentaron los siguientes cambios respecto a la arquitectura estándar de MobileNetV2 para adaptarla plenamente al dominio de audio:
 \begin{itemize}
-    \item \textbf{Loss (test):} 1.0522
-    \item \textbf{Accuracy (test):} 0.6388
-    \item \textbf{F1 Macro (test):} 0.6344
-    \item \textbf{Mejor Accuracy de validación:} 0.6300
+    \item \textbf{Tamaño de entrada y 1 Canal:} La capa convolucional inicial (que utiliza un bloque de \textit{Conv2d + BatchNorm + ReLU6}) recibe un tensor adaptado a un solo canal, correspondiente a imágenes en escala de grises de mel-espectrogramas ($1 \times 128 \times 128$), en contraste con los comunes $3 \times 224 \times 224$ (RGB) de ImageNet.
+    \item \textbf{Uso de Inverted Residuals:} Se conservó la topología matricial de bloques convolucionales de tipo \textit{Inverted Residual} provista por redes móviles con convoluciones mutuamente separables (\textit{Depthwise Separable Convolutions}), con el propósito fundamental de reducir a niveles infimos el costo de operaciones en hardware móvil.
+    \item \textbf{Clasificador Lineal y Reducción de Ruido:} El tensor de la extracción de características finaliza su procesamiento en una capa \textit{Global Average Pooling}. A continuación se aplica una capa reguladora \textit{Dropout} ($p=0.2$) para estabilizar la varianza, resolviendo hacia una sola capa lineal enfocada a clasificar los comandos correspondientes.
 \end{itemize}
 
-Estos valores reflejan el comportamiento del modelo actual con datos crudos, el desglose de resultados para cada comando de voz se muestra en la tabla \ref{tab:metricas_a}
+\subsubsection{Definición de la Arquitectura}
+La secuencia en su estructura se presenta en la Tabla \ref{tab:arquitectura_b}. Consiste en un bloque inicial expansivo, siete etapas secuenciadas que usan estructuras \textit{Inverted Residual} con distintas profundidades en factor ($t$, $c$, $n$, $s$) para extracción iterativa y eficiente, así como un último subconjunto con promediado de vectores lineales.
 
 \begin{table}[htbp]
-\caption{Reporte de Clasificación - Modelo A (datos crudos)}
-\label{tab:metricas_a}
+\caption{Diagrama de Capas - MobileNetV2 Adaptado}
+\label{tab:arquitectura_b}
 \centering
-\begin{tabular}{lcccc}
+\begin{tabular}{ll}
 \toprule
-\textbf{Comando} & \textbf{Precision} & \textbf{Recall} & \textbf{F1-Score} & \textbf{Support} \\
+\textbf{Capa / Operación} & \textbf{Dimensión / Canal} \\
 \midrule
-yes   & 0.87 & 0.57 & 0.69 & 630 \\
-no    & 0.51 & 0.33 & 0.40 & 569 \\
-up    & 0.55 & 0.82 & 0.66 & 573 \\
-down  & 0.54 & 0.77 & 0.64 & 586 \\
-left  & 0.61 & 0.70 & 0.65 & 555 \\
-right & 0.83 & 0.72 & 0.77 & 576 \\
-on    & 0.68 & 0.67 & 0.67 & 574 \\
-off   & 0.69 & 0.49 & 0.57 & 565 \\
-stop  & 0.65 & 0.73 & 0.69 & 558 \\
-go    & 0.59 & 0.60 & 0.59 & 597 \\
-\midrule
-\textbf{Accuracy} & \multicolumn{3}{c}{\textbf{0.64}} & \textbf{5783} \\
-\textbf{Macro Avg}& 0.65 & 0.64 & 0.63 & 5783 \\
+Input (Mel-Spectrogram) & $(B, 1, 128, 128)$ \\
+Conv1 ($1 \to 32, 3 \times 3$) + BN + ReLU6 & $(B, 32)$ \textit{Stride 2}\\
+Inverted Residual 1 ($t=1, c=16, n=1, s=1$) & $(B, 16)$ \\
+Inverted Residual 2 ($t=6, c=24, n=2, s=2$) & $(B, 24)$ \\
+Inverted Residual 3 ($t=6, c=32, n=3, s=2$) & $(B, 32)$ \\
+Inverted Residual 4 ($t=6, c=64, n=4, s=2$) & $(B, 64)$ \\
+Inverted Residual 5 ($t=6, c=96, n=3, s=1$) & $(B, 96)$ \\
+Inverted Residual 6 ($t=6, c=160, n=3, s=2$) & $(B, 160)$ \\
+Inverted Residual 7 ($t=6, c=320, n=1, s=1$) & $(B, 320)$ \\
+Conv Pointwise (1x1) + BN + ReLU6 & $(B, 1280)$ \\
+Global Average Pooling & $(B, 1280)$ \\
+Dropout ($p=0.2$) + Linear ($1280 \to 10$) & $(B, 10)$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Modelo_MobileNetV2_adaptado.png}}
+\caption{Diagrama visual de la arquitectura del Modelo B.}
+\label{fig:model_b}
+\end{figure}
+
+\subsubsection{Función de Pérdida, Optimizador y Entrenamiento}
+Del mismo modo que en el modelo A, se adoptó como función de pérdida la \textit{Cross-Entropy Loss} al ser la más robusta para clases multivariadas. Respecto a la optimización, se ajustó al uso del algoritmo \texttt{Adam}, manteniendo ratios controlados bajo reducción (\textit{Weight Decay} y un programa de control \texttt{ReduceLROnPlateau}) aprovechando implementaciones de cálculo por precisión geométrica (\texttt{torch.amp}) para reducir la memoria total GPU.
+
+\section{Análisis y comparación de resultados}
+
+\subsection{Modelo A: Datos crudos}
+
+Para evaluar rigurosamente la arquitectura LeNet-5 adaptada a mel-espectrogramas con el uso de datos crudos (sin aumento), se diseñaron iteraciones con tres configuraciones de hiperparámetros distintas durante la fase de entrenamiento:
+
+\begin{itemize}
+    \item \textbf{Configuración 1:} Tasa de aprendizaje (LR) de $1 \times 10^{-3}$, tamaño de lote (BS) de 128, y manejador \texttt{ReduceLROnPlateau} (factor=0.5, patience=3).
+    \item \textbf{Configuración 2:} Tasa de aprendizaje de $5 \times 10^{-4}$, tamaño de lote de 64, y el programador \texttt{StepLR} (step\_size=10, gamma=0.5).
+    \item \textbf{Configuración 3:} Tasa de aprendizaje más alta de $2 \times 10^{-3}$, tamaño de lote de 256, y \texttt{ReduceLROnPlateau} más agresivo (factor=0.3, patience=5).
+\end{itemize}
+
+Los resultados globales consolidados para cada ensayo sobre el conjunto de prueba (Test) se registran en la Tabla \ref{tab:metricas_a_configs}.
+
+\begin{table}[htbp]
+\caption{Resultados por Configuración - Modelo A (datos crudos)}
+\label{tab:metricas_a_configs}
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Configuración} & \textbf{Accuracy} & \textbf{F1-Score (Macro)} & \textbf{Loss} \\
+\midrule
+Configuración 1 & 0.6388 & 0.6344 & 1.0522 \\
+Configuración 2 & \textbf{0.8883} & \textbf{0.8880} & \textbf{0.3475} \\
+Configuración 3 & 0.7074 & 0.7034 & 0.8022 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A partir de las métricas expuestas, es evidente que la \textbf{Configuración 2} resulta ser el mejor modelo. Al combinar una tasa de aprendizaje moderada con un menor tamaño de lote (64) y reducciones escalonadas (\texttt{StepLR}), el modelo evitó caer tempranamente en mínimos locales u oscilar sin convergencia, mejorando considerablemente su generalización sobre los audios y logrando acercarse a una precisión de prueba rondando un 89\%. 
+
+Al aislar el análisis sobre este mejor modelo (Configuración 2), se evaluaron sus gráficas de rendimiento.
+
+\begin{figure}[htbp]
 \centerline{\includegraphics[width=\linewidth]{images/Grafica_Loss_Modelo_A_raw.png}}
-\caption{Pérdida de entrenamiento y validación para el Modelo A.}
+\caption{Pérdida de entrenamiento y validación para el mejor Modelo A (Configuración 2).}
 \label{fig:loss_a}
 \end{figure}
 
-En la gráfica de \textbf{Loss}, la curva de entrenamiento desciende de forma consistente desde aproximadamente 2.19 hasta 1.22, mientras que la pérdida de validación se reduce desde 2.05 hasta 1.24. Este comportamiento indica que el modelo aprende patrones útiles sin incurrir en un sobreajuste abrupto durante la fase final del entrenamiento.
+En la gráfica de \textbf{Loss}, la curva de entrenamiento y la de validación descienden de manera más rápida y progresiva en comparación a configuraciones truncadas, acercándose asintóticamente a un valor inferior a 0.4. El uso de \texttt{StepLR} garantiza descensos estables a través del tiempo de cómputo, indicando menos señales de sobreajuste drástico durante casi todas las épocas.
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\linewidth]{images/Grafica_Accuracy_Modelo_A_raw.png}}
-\caption{Precisión de entrenamiento y validación para el Modelo A.}
+\caption{Precisión de entrenamiento y validación para el mejor Modelo A (Configuración 2).}
 \label{fig:accuracy_a}
 \end{figure}
 
-La gráfica de \textbf{Accuracy} muestra una tendencia de aprendizaje gradual: la precisión de entrenamiento crece de alrededor de 16\% a 58\%, mientras que la precisión de validación alcanza un pico de 63\% en las primeras épocas y luego se estabiliza cerca de 59\%. Esto sugiere que el modelo captura información discriminativa con el conjunto actual, pero su capacidad de generalización permanece limitada por la complejidad del problema y por el uso de datos crudos sin augmentation.
+Al examinar la gráfica de \textbf{Accuracy}, el modelo exhibe un aprendizaje firme. Muestra crecimientos significativos durante las primeras 15 épocas estabilizándose gradualmente hacia el \textasciitilde 88-89\%. La reducción de escalón en la época 10 consolida esta precisión impidiendo inestabilidades en la fase final de ajuste.
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\linewidth]{images/Grafica_F1_Modelo_A_raw.png}}
-\caption{Evolución del F1-Score macro en validación para el Modelo A.}
+\caption{Evolución del F1-Score macro en validación para el mejor Modelo A (Configuración 2).}
 \label{fig:f1_a}
 \end{figure}
 
-La gráfica de \textbf{F1-Score macro} evidencia que el desempeño del modelo mejora rápidamente en las primeras épocas y luego se estabiliza, reflejando un balance moderado entre precisión y recall. El valor final de F1 macro en prueba es 0.6344, lo que confirma que aún existen diferencias sustanciales entre clases y que algunos comandos son más difíciles de distinguir.
+En la gráfica de \textbf{F1-Score macro}, el progreso es consistente con la exactitud general. Alcanzar un F1 macro superior a 0.88 significa que el modelo adquirió un nivel equilibrado de sensibilidad y precisión en una amplia mayoría de las 10 clases de comandos, minimizando sesgos de preferencia causados por alguna clase individual.
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\linewidth]{images/Matriz_Confusion_Modelo_A_raw.png}}
-\caption{Matriz de confusión del Modelo A (datos crudos) sobre los datos de prueba.}
+\caption{Matriz de confusión del mejor Modelo A (Configuración 2) sobre los datos de prueba.}
 \label{fig:matriz_a}
 \end{figure}
 
-La matriz de confusión muestra que los comandos \texttt{yes} y \texttt{no} presentan confusiones relevantes, al igual que pares como \texttt{up}/\texttt{down} y \texttt{go}/\texttt{stop}. Esto es consistente con el desempeño de la arquitectura actual: las activaciones \texttt{Tanh} y el clasificador 100\% convolucional mantienen un modelo compacto, pero la representación aprendida todavía requiere mayor robustez frente a variaciones acústicas.
+Como resultado en la matriz de confusión, el número de falsos positivos en relaciones conflictivas como las palabras muy cortas se reduce enormemente de forma visual. Sin embargo, a pesar de los buenos resultados que brinda este ajuste de hiperparámetros, la robustez nativa de la topología puramente convolucional ($1 \times 1$) y activaciones tipo \texttt{Tanh} continúan siendo bastante primitivas debido al uso de los datos sin aumento espectral. 
 
-El rediseño del clasificador con convoluciones $1 \times 1$ y Global Average Pooling reduce parámetros y favorece el despliegue móvil, aunque la versión actual del modelo demuestra que se necesita complementar esta eficiencia con técnicas adicionales como \textit{data augmentation}, normalización avanzada o ajustes finos de hiperparámetros para aumentar la precisión hacia el 70\% o superior.
+El rediseño del clasificador de este Modelo A es ligero y altamente favorecedor para un posible despliegue embebido, pero el uso de la aumentación de datos (como \textit{Time Shift}, y SpecAugment) descrita en secciones previas será la pieza vital faltante para resolver la brecha sobre las discrepancias acústicas y elevar el Accuracy del entorno final.
+
+\subsection{Modelo A: Datos aumentados}
+
+Para contrarrestar las debilidades acústicas de solapamiento percibidas en los datos crudos y fortalecer la generalización general, se evaluó de nuevo la arquitectura de LeNet-5 pero alimentando los modelos con el tensor originario de la aumentación de datos (Time Shift, ruido blanco y SpecAugment). Con el fin de comparar justamente, se mantuvieron las mismas tres configuraciones hiperparámetrales previas.
+
+\begin{table}[htbp]
+\caption{Resultados por Configuración - Modelo A (datos aumentados)}
+\label{tab:metricas_a_configs_aug}
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Configuración} & \textbf{Accuracy} & \textbf{F1-Score (Macro)} & \textbf{Loss} \\
+\midrule
+Configuración 1 & 0.8271 & 0.8262 & 0.5050 \\
+Configuración 2 & \textbf{0.8322} & \textbf{0.8316} & \textbf{0.4863} \\
+Configuración 3 & 0.8016 & 0.8004 & 0.5796 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Pese al alto rendimiento visual en datos crudos, la validación del modelo se enriqueció visiblemente aquí por la \textbf{Configuración 2} obteniendo el mejor ajuste. Los datos aumentados son matemáticamente más densos, y el \texttt{StepLR} con lotes de 64 forzó a la red neuronal a no depender de características auditivas frágiles. Al estabilizar su exactitud sobre el \textasciitilde 83.22\% y un envidiable \textit{loss} de 0.48, el modelo resultante es considerablemente más tolerante a entornos no controlados (nuestro objetivo con el hardware embebido). 
+
+Al verificar visualmente el mejor modelo (Configuración 2) con datos aumentados:
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Grafica_Loss_Modelo_A_augmented.png}}
+\caption{Pérdida de entrenamiento y validación para el mejor Modelo A aumentado.}
+\label{fig:loss_a_aug}
+\end{figure}
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Grafica_Accuracy_Modelo_A_augmented.png}}
+\caption{Precisión de entrenamiento y validación para el mejor Modelo A aumentado.}
+\label{fig:accuracy_a_aug}
+\end{figure}
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Grafica_F1_Modelo_A_augmented.png}}
+\caption{Evolución del F1-Score macro para el mejor Modelo A aumentado.}
+\label{fig:f1_a_aug}
+\end{figure}
+
+Las métricas escalan de una forma mucho menos abrumadora o inestable que con datos crudos. Las distorsiones de \textit{White Noise} forzaron fluctuaciones moderadas que resultaron enriquecedoras como regularizador en épocas tempranas para prevenir por completo problemas de estancamiento.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Matriz_Confusion_Modelo_A_augmented.png}}
+\caption{Matriz de confusión del Modelo A aumentado sobre el conjunto de prueba.}
+\label{fig:matriz_a_aug}
+\end{figure}
+
+La matriz de decaimientos demuestra que órdenes acústica o morfológicamente similares ahora tienen un recuadro de diagonales reforzado, confirmando que la aumentación de datos logró asilar firmas audibles crucialmente separables. A pesar de esto, se abre la brecha a experimentar un mejor comportamiento con modelos adaptados como MobileNetV2.
+
+\subsection{Modelo B: Datos crudos}
+
+A continuación, se evaluó la arquitectura adaptada del Modelo B (MobileNetV2Audio) utilizando únicamente el conjunto de espectrogramas crudos. A diferencia de LeNet-5, la inclusión de bloques \textit{Inverted Residuals} presuponía una clara ventaja en el reconocimiento visual y espacial del espectro sonoro. Para mantener un marco competitivo justo frente al primer modelo, la red fue entrenada empleando exactamente las mismas tres configuraciones de hiperparámetros:
+
+\begin{itemize}
+    \item \textbf{Configuración 1:} Tasa de aprendizaje (LR) de $1 \times 10^{-3}$, tamaño de lote (BS) de 128, y \texttt{ReduceLROnPlateau} (factor=0.5, patience=3).
+    \item \textbf{Configuración 2:} Tasa de aprendizaje de $5 \times 10^{-4}$, tamaño de lote de 64, y \texttt{StepLR} (step\_size=10, gamma=0.5).
+    \item \textbf{Configuración 3:} Tasa de aprendizaje de $2 \times 10^{-3}$, tamaño de lote de 256, y \texttt{ReduceLROnPlateau} más agresivo (factor=0.3, patience=5).
+\end{itemize}
+
+Los resultados consolidados para cada ensayo sobre el conjunto de prueba se presentan en la Tabla \ref{tab:metricas_b_configs_raw}.
+
+\begin{table}[htbp]
+\caption{Resultados por Configuración - Modelo B (datos crudos)}
+\label{tab:metricas_b_configs_raw}
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Configuración} & \textbf{Accuracy} & \textbf{F1-Score (Macro)} & \textbf{Loss} \\
+\midrule
+Configuración 1 & 0.9592 & 0.9590 & 0.1826 \\
+Configuración 2 & 0.9552 & 0.9551 & 0.2073 \\
+Configuración 3 & \textbf{0.9633} & \textbf{0.9631} & \textbf{0.1430} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Inmediatamente se observa un salto masivo en precisión en comparación con la versión inicial del Modelo A. Para este modelo más sofisticado, la \textbf{Configuración 3} logró la victoria absoluta superando el 96\% de exactitud con un loss bajísimo (0.14). El tamaño de lote grande (256) complementado por una tasa de aprendizaje inicialmente robusta ($2 \times 10^{-3}$) permitió rápidos avances a través del gradiente usando esta topología más profunda.
+
+Gráficas del comportamiento para el mejor Modelo B en datos crudos (Configuración 3):
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Grafica_Loss_Modelo_B_raw.png}}
+\caption{Pérdida de entrenamiento y validación para el mejor Modelo B (datos crudos).}
+\label{fig:loss_b_raw}
+\end{figure}
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Grafica_Accuracy_Modelo_B_raw.png}}
+\caption{Precisión de entrenamiento y validación para el mejor Modelo B (datos crudos).}
+\label{fig:accuracy_b_raw}
+\end{figure}
+
+Ambas métricas (Loss y Accuracy) se desarrollan de manera excepcionalmente firme. El modelo rápidamente alcanzó un Accuracy superior al 95\% durante el entrenamiento temprano y preservó ese factor hasta el final.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Grafica_F1_Modelo_B_raw.png}}
+\caption{Evolución del F1-Score macro para el mejor Modelo B (datos crudos).}
+\label{fig:f1_b_raw}
+\end{figure}
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Matriz_Confusion_Modelo_B_raw.png}}
+\caption{Matriz de confusión del Modelo B (datos crudos) sobre el conjunto de prueba.}
+\label{fig:matriz_b_raw}
+\end{figure}
+
+En la matriz de confusión, los cruces falsos positivos quedan reducidos a mínimos nominales. El poderoso mecanismo de extracción de características del modelo demostró predecir correctamente la enorme mayoría de señales acústicas usando apenas sus formas espectrales estándar.
+
+\subsection{Modelo B: Datos aumentados}
+
+Al igual que en el escenario anterior, se procedió a someter a la red MobileNetV2Audio (Modelo B) ante el conjunto provisto por la aumentación de datos (ruido blanco, SpecAugment y desplazamientos de tiempo). Para mantener la coherencia comparativa, se utilizaron en esta fase las mismas tres configuraciones hiperparámetrales:
+
+\begin{itemize}
+    \item \textbf{Configuración 1:} Tasa de aprendizaje (LR) de $1 \times 10^{-3}$, tamaño de lote (BS) de 128, y \texttt{ReduceLROnPlateau} (factor=0.5, patience=3).
+    \item \textbf{Configuración 2:} Tasa de aprendizaje de $5 \times 10^{-4}$, tamaño de lote de 64, y \texttt{StepLR} (step\_size=10, gamma=0.5).
+    \item \textbf{Configuración 3:} Tasa de aprendizaje de $2 \times 10^{-3}$, tamaño de lote de 256, y \texttt{ReduceLROnPlateau} más agresivo (factor=0.3, patience=5).
+\end{itemize}
+
+Los resultados generales sobre los datos de prueba quedan plasmados en la Tabla \ref{tab:metricas_b_configs_aug}.
+
+\begin{table}[htbp]
+\caption{Resultados por Configuración - Modelo B (datos aumentados)}
+\label{tab:metricas_b_configs_aug}
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Configuración} & \textbf{Accuracy} & \textbf{F1-Score (Macro)} & \textbf{Loss} \\
+\midrule
+Configuración 1 & 0.9497 & 0.9493 & 0.2317 \\
+Configuración 2 & 0.9435 & 0.9430 & 0.2534 \\
+Configuración 3 & \textbf{0.9507} & \textbf{0.9503} & \textbf{0.1523} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+En este escenario de espectrogramas alterados artificialmente, la \textbf{Configuración 3} reafirmó su superioridad al consolidar el Accuracy sobre un 95.07\% y mantener un loss notablemente bajo (0.15). Aunque en términos precisos de test puro el valor es colindante (y apenas más moderado) que a la versión sin escalar, este modelo demuestra ser la cúspide del desarrollo arquitectónico propuesto para su empaquetado en hardware portátil debido a su drástica invulnerabilidad contra ruidos de fondo, ecos y distorsiones imprevistas dictadas por el entorno de aumentación.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Grafica_Loss_Modelo_B_augmented.png}}
+\caption{Pérdida de entrenamiento y validación para el mejor Modelo B aumentado.}
+\label{fig:loss_b_aug}
+\end{figure}
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Grafica_Accuracy_Modelo_B_augmented.png}}
+\caption{Precisión de entrenamiento y validación para el mejor Modelo B aumentado.}
+\label{fig:accuracy_b_aug}
+\end{figure}
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Grafica_F1_Modelo_B_augmented.png}}
+\caption{Evolución del F1-Score macro para el mejor Modelo B aumentado.}
+\label{fig:f1_b_aug}
+\end{figure}
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/Matriz_Confusion_Modelo_B_augmented.png}}
+\caption{Matriz de confusión del Modelo B aumentado sobre el conjunto de prueba.}
+\label{fig:matriz_b_aug}
+\end{figure}
+
+Con una matriz que expone una solidez diagonal excelente, las falsas activaciones se diluyen casi perfectamente a través de las distintas voces de los comandos. El rediseño estructural hacia MobileNetV2 en conjunción con lotes agresivos y aumentaciones sonoras logra clasificar audios densamente corrompidos, validando por completo su elección como arquitectura definitiva a ser portada para los dispositivos móviles con ONNX.
 
 \section{Referencias}
 
