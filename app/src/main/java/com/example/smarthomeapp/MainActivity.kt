@@ -15,7 +15,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -24,45 +23,86 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
 import com.example.smarthomeapp.ui.theme.SmartHomeAppTheme
-import kotlinx.coroutines.delay
+import androidx.compose.foundation.shape.CircleShape
+import android.Manifest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import android.util.Log
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.runtime.snapshotFlow
 
+data class Device(
+    val name: String,
+    val description: String,
+    var isOn: Boolean,
+    var isSensible: Boolean
+)
+
+data class Routines(
+    val name: String,
+    val description: String,
+    var isOn: Boolean
+)
+
+data class PredictionResult(
+    val word: String,
+    val confidence: Float,
+    val performed: Boolean
+)
 class MainActivity : ComponentActivity() {
+
+    private lateinit var recorder: VoiceCommandRecorder
+    private lateinit var navigationManager: NavigationManager
+
+    private val requestMicPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startListening()
+            } else {
+                Log.w("MainActivity", "Microphone permission denied")
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        navigationManager = NavigationManager(columns = 2)
+        recorder = VoiceCommandRecorder(this, navigationManager)
+        recorder.loadModel()
+
+        // Ask for permission — startListening() is called in the callback above
+        requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+
         enableEdgeToEdge()
         setContent {
             SmartHomeAppTheme {
-                SmartHomeAppApp()
+                SmartHomeAppApp(navigationManager)
             }
         }
     }
-}
 
-suspend fun runVoiceDemo(
-    navigationManager: NavigationManager,
-    onAction: (NavigationAction) -> Unit
-) {
-    val commands = listOf(
-        VoiceCommand.RIGHT,
-        VoiceCommand.DOWN,
-        VoiceCommand.LEFT,
-        VoiceCommand.DOWN,
-        VoiceCommand.ON,
-        VoiceCommand.UP,
-        VoiceCommand.RIGHT,
-        VoiceCommand.OFF,
-        VoiceCommand.LEFT,
-        VoiceCommand.OFF
-    )
-
-    for (command in commands) {
-        val action = navigationManager.handle(command)
-
-        if (action != null) {
-            onAction(action)
+    private fun startListening() {
+        lifecycleScope.launch {
+            snapshotFlow { navigationManager.isListening }
+                .collect { listening ->
+                    if (listening) {
+                        @Suppress("MissingPermission")
+                        recorder.startContinuousListening()
+                    } else {
+                        recorder.stopContinuousListening()
+                    }
+                }
         }
+    }
 
-        delay(3000)
+    override fun onDestroy() {
+        super.onDestroy()
+        recorder.release()
     }
 }
 
@@ -74,126 +114,38 @@ enum class AppDestinations(
     ROUTINES("Routines", R.drawable.ic_routines)
 }
 
-data class Device(
-    val name: String,
-    val description: String,
-    var isOn: Boolean
-)
-
 @Composable
-fun SmartHomeAppApp() {
-    val navigationManager = remember { NavigationManager(columns = 2) }
-
-    var currentDestination by rememberSaveable {
-        mutableStateOf(AppDestinations.DEVICES)
-    }
-
-    var isListening by remember {
-        mutableStateOf(false)
-    }
-
-    var devices by remember {
-        mutableStateOf(
-            listOf(
-                Device("Lights", "Living room & bedrooms", true),
-                Device("Fan", "Air circulation", false),
-                Device("TV", "Media screen", false),
-                Device("Kitchen", "Kitchen devices", true),
-                Device("Garage", "Garage lights", false),
-                Device("Bedroom", "Bedroom AC", true)
-            )
-        )
-    }
-
-    LaunchedEffect(devices.size) {
-        navigationManager.updateDeviceCount(devices.size)
-    }
-
-    //Demo de acciones del cursor
-    LaunchedEffect(Unit) {
-        runVoiceDemo(navigationManager) { action ->
-
-            when (action) {
-
-                is NavigationAction.TurnDeviceOn -> {
-                    devices = devices.mapIndexed { index, device ->
-                        if (index == action.index)
-                            device.copy(isOn = true)
-                        else
-                            device
-                    }
-                }
-
-                is NavigationAction.TurnDeviceOff -> {
-                    devices = devices.mapIndexed { index, device ->
-                        if (index == action.index)
-                            device.copy(isOn = false)
-                        else
-                            device
-                    }
-                }
-
-                is NavigationAction.NavigateDevices -> {
-                    currentDestination = AppDestinations.DEVICES
-                }
-
-                is NavigationAction.NavigateRoutines -> {
-                    currentDestination = AppDestinations.ROUTINES
-                }
-
-                is NavigationAction.SelectListening -> {
-                    isListening = !isListening
-                }
-
-                is NavigationAction.SelectDevice -> {
-                    devices = devices.mapIndexed { index, device ->
-                        if (index == action.index)
-                            device.copy(isOn = !device.isOn)
-                        else
-                            device
-                    }
-                }
-
-                is NavigationAction.StartRoutine -> {
-                    println("Start routine ${action.index}")
-                }
-
-                is NavigationAction.StopRoutine -> {
-                    println("Stop routine ${action.index}")
-                }
-            }
-        }
-    }
-
+fun SmartHomeAppApp(navigationManager: NavigationManager = remember { NavigationManager(columns = 2) }) {
     Scaffold(
         bottomBar = {
-            BottomBar(
-                currentDestination = currentDestination,
-                onNavigate = { currentDestination = it },
-                isListening = isListening,
-                onToggleListening = { isListening = !isListening },
-                navigationManager = navigationManager
-            )
+            Column {
+                PredictionBanner(navigationManager.lastPrediction)
+                BottomBar(
+                    currentDestination = navigationManager.currentDestination,
+                    onNavigate = { },
+                    isListening = navigationManager.isListening,
+                    onToggleListening = { navigationManager.toggleListening() },
+                    navigationManager = navigationManager
+                )
+            }
         }
     ) { innerPadding ->
-        when (currentDestination) {
+
+        when (navigationManager.currentDestination) {
+
             AppDestinations.DEVICES -> DevicesScreen(
                 modifier = Modifier.padding(innerPadding),
-                devices = devices,
-                navigationManager = navigationManager,
-                onToggleDevice = { clicked ->
-                    devices = devices.map {
-                        if (it.name == clicked.name)
-                            it.copy(isOn = !it.isOn)
-                        else it
-                    }
-                }
+                navigationManager = navigationManager
             )
 
             AppDestinations.ROUTINES -> RoutinesScreen(
-                Modifier.padding(innerPadding)
+                modifier = Modifier.padding(innerPadding),
+                navigationManager = navigationManager
             )
         }
+    }
+    navigationManager.pendingConfirmation?.let {
+        ConfirmationDialog(navigationManager)
     }
 }
 
@@ -279,7 +231,7 @@ fun BottomBar(
 
         NavigationBarItem(
             selected = currentDestination == AppDestinations.DEVICES,
-            onClick = { onNavigate(AppDestinations.DEVICES) },
+            onClick = { navigationManager.selectDestination(AppDestinations.DEVICES) },
             icon = {
                 Icon(
                     painterResource(R.drawable.ic_home),
@@ -297,13 +249,13 @@ fun BottomBar(
             ListeningIndicator(
                 isListening = isListening,
                 isFocused = focusedBottom == 1,
-                onClick = onToggleListening
+                onClick = { navigationManager.toggleListening() }
             )
         }
 
         NavigationBarItem(
             selected = currentDestination == AppDestinations.ROUTINES,
-            onClick = { onNavigate(AppDestinations.ROUTINES) },
+            onClick = { navigationManager.selectDestination(AppDestinations.ROUTINES) },
             icon = {
                 Icon(
                     painterResource(R.drawable.ic_routines),
@@ -317,12 +269,87 @@ fun BottomBar(
 }
 
 @Composable
+fun ConfirmationDialog(
+    navigationManager: NavigationManager
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.65f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            shape = RoundedCornerShape(20.dp)
+        ) {
+            Column(
+                Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Are you sure to handle this device?",
+                    style = MaterialTheme.typography.headlineSmall
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                Text("Say YES to confirm")
+                Text("Say NO to cancel")
+            }
+        }
+    }
+}
+
+@Composable
+fun PredictionBanner(prediction: PredictionResult?) {
+    val visible = prediction != null
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + slideInVertically { it },
+        exit  = fadeOut() + slideOutVertically { it }
+    ) {
+        prediction ?: return@AnimatedVisibility
+        val performed = prediction.performed
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1A1F2E))
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = prediction.word,
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${"%.0f".format(prediction.confidence * 100)}%",
+                color = Color.LightGray,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.weight(1f)
+            )
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = if (performed) Color(0xFF1B5E20) else Color(0xFF4A1A1A)
+            ) {
+                Text(
+                    text = if (performed) "performed" else "ignored",
+                    color = if (performed) Color(0xFF69F0AE) else Color(0xFFFF5252),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun DevicesScreen(
     modifier: Modifier = Modifier,
-    devices: List<Device>,
-    navigationManager: NavigationManager,
-    onToggleDevice: (Device) -> Unit
+    navigationManager: NavigationManager
 ) {
+    val devices = navigationManager.devices
     val focusedIndex = navigationManager.focusedDeviceIndex()
 
     Column(
@@ -332,7 +359,7 @@ fun DevicesScreen(
             .padding(16.dp)
     ) {
         Text(
-            "Home Dashboard",
+            text = "Home Dashboard",
             style = MaterialTheme.typography.headlineMedium,
             color = Color.White
         )
@@ -348,7 +375,9 @@ fun DevicesScreen(
                 DeviceCard(
                     device = device,
                     isFocused = focusedIndex == index,
-                    onToggle = { onToggleDevice(device) }
+                    onToggle = {
+                        navigationManager.toggleDevice(index)
+                    }
                 )
             }
         }
@@ -358,6 +387,76 @@ fun DevicesScreen(
 @Composable
 fun DeviceCard(
     device: Device,
+    isFocused: Boolean,
+    onToggle: () -> Unit
+) {
+    Box(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(
+                    width = if (isFocused) 2.dp else 0.dp,
+                    color = Color.Cyan,
+                    shape = RoundedCornerShape(20.dp)
+                ),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(
+                containerColor =
+                    if (device.isOn) Color(0xFF1C2A3A)
+                    else Color(0xFF151B2C)
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Text(
+                    text = device.name,
+                    color = Color.White
+                )
+
+                Text(
+                    text = device.description,
+                    color = Color.Gray
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                Switch(
+                    checked = device.isOn,
+                    onCheckedChange = { onToggle() }
+                )
+            }
+        }
+
+        // Warning badge overlay
+        if (device.isSensible) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp),
+                shape = CircleShape,
+                color = Color.Red
+            ) {
+                Text(
+                    text = "!",
+                    modifier = Modifier.padding(
+                        horizontal = 8.dp,
+                        vertical = 2.dp
+                    ),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun RoutineCard(
+    routine: Routines,
     isFocused: Boolean,
     onToggle: () -> Unit
 ) {
@@ -372,26 +471,42 @@ fun DeviceCard(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor =
-                if (device.isOn) Color(0xFF1C2A3A)
+                if (routine.isOn) Color(0xFF20354A)
                 else Color(0xFF151B2C)
         )
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(device.name, color = Color.White)
-            Text(device.description, color = Color.Gray)
+        Column(
+            Modifier.padding(16.dp)
+        ) {
+            Text(
+                routine.name,
+                color = Color.White
+            )
+
+            Text(
+                routine.description,
+                color = Color.Gray
+            )
 
             Spacer(Modifier.height(12.dp))
 
             Switch(
-                checked = device.isOn,
-                onCheckedChange = { onToggle() }
+                checked = routine.isOn,
+                onCheckedChange = {
+                    onToggle()
+                }
             )
         }
     }
 }
-
 @Composable
-fun RoutinesScreen(modifier: Modifier = Modifier) {
+fun RoutinesScreen(
+    modifier: Modifier = Modifier,
+    navigationManager: NavigationManager
+) {
+    val routines = navigationManager.routines
+    val focusedIndex = navigationManager.focusedRoutineIndex()
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -399,10 +514,28 @@ fun RoutinesScreen(modifier: Modifier = Modifier) {
             .padding(16.dp)
     ) {
         Text(
-            "Routines",
+            text = "Routines",
             style = MaterialTheme.typography.headlineMedium,
             color = Color.White
         )
+
+        Spacer(Modifier.height(12.dp))
+
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            itemsIndexed(routines) { index, routine ->
+                RoutineCard(
+                    routine = routine,
+                    isFocused = focusedIndex == index,
+                    onToggle = {
+                        navigationManager.toggleRoutine(index)
+                    }
+                )
+            }
+        }
     }
 }
 
