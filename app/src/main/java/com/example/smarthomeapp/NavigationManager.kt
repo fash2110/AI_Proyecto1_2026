@@ -30,6 +30,10 @@ data class FocusPosition(
     val col: Int
 )
 
+sealed class PendingConfirmation {
+    data class TurnOnDevice(val index: Int) : PendingConfirmation()
+    data class TurnOffDevice(val index: Int) : PendingConfirmation()
+}
 class NavigationManager(
     private val columns: Int = 2,
     private val bottomBarItems: Int = 3
@@ -68,9 +72,11 @@ class NavigationManager(
     var pendingConfirmation by mutableStateOf<PendingConfirmation?>(null)
         private set
 
-    sealed class PendingConfirmation {
-        data class TurnOnDevice(val index: Int) : PendingConfirmation()
-        data class TurnOffDevice(val index: Int) : PendingConfirmation()
+    var lastPrediction by mutableStateOf<PredictionResult?>(null)
+        private set
+
+    fun updatePrediction(result: PredictionResult) {
+        lastPrediction = result
     }
 
     /* ---------- NAVIGATION STATE ---------- */

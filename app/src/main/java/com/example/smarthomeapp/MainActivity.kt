@@ -23,9 +23,18 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
 import com.example.smarthomeapp.ui.theme.SmartHomeAppTheme
-import kotlinx.coroutines.delay
-import android.util.Log
 import androidx.compose.foundation.shape.CircleShape
+import android.Manifest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import android.util.Log
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.runtime.snapshotFlow
 
 data class Device(
     val name: String,
@@ -39,45 +48,61 @@ data class Routines(
     val description: String,
     var isOn: Boolean
 )
+
+data class PredictionResult(
+    val word: String,
+    val confidence: Float,
+    val performed: Boolean
+)
 class MainActivity : ComponentActivity() {
+
+    private lateinit var recorder: VoiceCommandRecorder
+    private lateinit var navigationManager: NavigationManager
+
+    private val requestMicPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startListening()
+            } else {
+                Log.w("MainActivity", "Microphone permission denied")
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        navigationManager = NavigationManager(columns = 2)
+        recorder = VoiceCommandRecorder(this, navigationManager)
+        recorder.loadModel()
+
+        // Ask for permission — startListening() is called in the callback above
+        requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+
         enableEdgeToEdge()
         setContent {
             SmartHomeAppTheme {
-                SmartHomeAppApp()
+                SmartHomeAppApp(navigationManager)
             }
         }
     }
-}
 
-//TODO: DEMO de acciones, eliminar cuando se integre con modelo
-suspend fun runVoiceDemo(
-    navigationManager: NavigationManager
-) {
-    val commands = listOf(
-        VoiceCommand.DOWN,
-        VoiceCommand.GO,
-        VoiceCommand.STOP,
-        VoiceCommand.YES,
-        VoiceCommand.DOWN,
-        VoiceCommand.ON,
-        VoiceCommand.NO,
-        VoiceCommand.DOWN,
-        VoiceCommand.RIGHT,
-        VoiceCommand.YES,
-        VoiceCommand.RIGHT,
-        VoiceCommand.YES,
-        VoiceCommand.GO,
-        VoiceCommand.DOWN,
-        VoiceCommand.GO,
-        VoiceCommand.STOP
-    )
+    private fun startListening() {
+        lifecycleScope.launch {
+            snapshotFlow { navigationManager.isListening }
+                .collect { listening ->
+                    if (listening) {
+                        @Suppress("MissingPermission")
+                        recorder.startContinuousListening()
+                    } else {
+                        recorder.stopContinuousListening()
+                    }
+                }
+        }
+    }
 
-    for (command in commands) {
-        navigationManager.handle(command)
-        Log.d("demo", "Executing: $command")
-        delay(2000)
+    override fun onDestroy() {
+        super.onDestroy()
+        recorder.release()
     }
 }
 
@@ -90,25 +115,19 @@ enum class AppDestinations(
 }
 
 @Composable
-fun SmartHomeAppApp() {
-    val navigationManager = remember { NavigationManager(columns = 2) }
-
-    // TEMP demo
-    LaunchedEffect(Unit) {
-        runVoiceDemo(navigationManager)
-    }
-
+fun SmartHomeAppApp(navigationManager: NavigationManager = remember { NavigationManager(columns = 2) }) {
     Scaffold(
         bottomBar = {
-            BottomBar(
-                currentDestination = navigationManager.currentDestination,
-                onNavigate = { }, // navigation now controlled by manager
-                isListening = navigationManager.isListening,
-                onToggleListening = {
-                    navigationManager.handle(VoiceCommand.YES)
-                },
-                navigationManager = navigationManager
-            )
+            Column {
+                PredictionBanner(navigationManager.lastPrediction)
+                BottomBar(
+                    currentDestination = navigationManager.currentDestination,
+                    onNavigate = { },
+                    isListening = navigationManager.isListening,
+                    onToggleListening = { navigationManager.toggleListening() },
+                    navigationManager = navigationManager
+                )
+            }
         }
     ) { innerPadding ->
 
@@ -279,6 +298,52 @@ fun ConfirmationDialog(
         }
     }
 }
+
+@Composable
+fun PredictionBanner(prediction: PredictionResult?) {
+    val visible = prediction != null
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + slideInVertically { it },
+        exit  = fadeOut() + slideOutVertically { it }
+    ) {
+        prediction ?: return@AnimatedVisibility
+        val performed = prediction.performed
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1A1F2E))
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = prediction.word,
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${"%.0f".format(prediction.confidence * 100)}%",
+                color = Color.LightGray,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.weight(1f)
+            )
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = if (performed) Color(0xFF1B5E20) else Color(0xFF4A1A1A)
+            ) {
+                Text(
+                    text = if (performed) "performed" else "ignored",
+                    color = if (performed) Color(0xFF69F0AE) else Color(0xFFFF5252),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun DevicesScreen(
     modifier: Modifier = Modifier,
