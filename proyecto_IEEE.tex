@@ -32,10 +32,33 @@ Email: Fer.sanchez@estudiantec.cr}}
 \maketitle
 
 \begin{abstract}
-
+Este informe corresponde al Proyecto~I del curso de Inteligencia Artificial: se construye, de extremo a extremo, un reconocedor de comandos de voz de vocabulario reducido orientado a un escenario de asistencia o control (p.\,ej.\ hogar inteligente), pasando del dato crudo al despliegue en dispositivo. Siguiendo el enunciado, se adopta el conjunto público \textit{Google Speech Commands} v0.02 con diez clases, partición oficial de entrenamiento, validación y prueba, y una representación tipo imagen mediante mel-espectrograma normalizado y reescalado a $128 \times 128$ para alimentar redes convolucionales en PyTorch. Se comparan dos familias de modelos---LeNet-5 adaptado (con \texttt{Tanh}) y MobileNetV2 en una variante ligera---bajo datos crudos frente a datos aumentados (desplazamiento temporal, ruido y SpecAugment) y tres configuraciones de hiperparámetros por combinación, lo que produce doce entrenamientos comparables. Las métricas en prueba muestran superioridad sostenida de MobileNetV2 (hasta $0.9633$ de exactitud en la mejor corrida). El seguimiento experimental se centralizó en Weights \& Biases. Por último, se documenta la línea de trabajo hacia la exportación ONNX, la comprobación de paridad con respecto a PyTorch y la integración prevista con ONNX Runtime Mobile en una aplicación Android (Jetpack Compose) que mapea la predicción a acciones de interfaz.
 \end{abstract}
 
+\begin{IEEEkeywords}
+Comandos de voz, mel-espectrograma, redes neuronales convolucionales, aumentación de datos, Weights \& Biases, ONNX, ONNX Runtime Mobile.
+\end{IEEEkeywords}
+
 \section{Marco teórico}
+
+La clasificación de audio corto puede formularse como reconocimiento de patrones en una imagen tiempo-frecuencia: a partir de una forma de onda muestreada se calcula una transformada de Fourier de tiempo corto (STFT) y un banco de filtros mel que aproxima la percepción humana de tono; el logaritmo de la energía mel amortigua la dinámica y facilita el entrenamiento de redes profundas \cite{torchaudio_docs}. Las redes neuronales convolucionales (CNN) en dos dimensiones extraen jerarquías locales de texturas y formas en ese mapa, de forma análoga a la visión por computador aplicada a representaciones espectrales.
+
+Para mejorar la generalización bajo ruido y variaciones de canal, es habitual aplicar aumentación en el dominio del tiempo (p.\,ej.\ desplazamiento) y en el espectro; SpecAugment enmascara franjas de tiempo y frecuencia en el mel-espectrograma durante el entrenamiento, obligando al modelo a no depender de un único bin o frame \cite{specaugment}.
+
+En dispositivos móviles, conviene separar entrenamiento (PyTorch) e inferencia ligera: exportar el grafo a ONNX en modo evaluación, con pesos congelados, y ejecutarlo con ONNX Runtime Mobile reduce dependencias y habilita optimizaciones de tiempo de ejecución \cite{onnxruntime}. La calidad del despliegue exige que el preprocesamiento en el terminal replique fielmente el usado al entrenar; la discrepancia se controla con pruebas de paridad logit-a-logit entre PyTorch y el runtime ONNX \cite{onnxruntime}.
+
+\section{Dataset y preprocesamiento}
+
+\subsection{Speech Commands v0.02 y subconjunto de diez clases}
+Se utilizó el conjunto \textit{Speech Commands} v0.02 distribuido por TensorFlow Datasets \cite{tensorflow_datasets_speech_commands}, compuesto por grabaciones en formato WAV de un segundo o menos, organizadas en carpetas por etiqueta léxica. Siguiendo el alcance del proyecto, se trabajó con diez comandos: \texttt{yes}, \texttt{no}, \texttt{up}, \texttt{down}, \texttt{left}, \texttt{right}, \texttt{on}, \texttt{off}, \texttt{stop} y \texttt{go}.
+
+\subsection{División entrenamiento, validación y prueba}
+La partición oficial del corpus se respeta mediante los archivos \texttt{validation\_list.txt} y \texttt{testing\_list.txt} incluidos en la raíz del dataset: las rutas listadas en ellos definen los conjuntos de validación y de prueba, respectivamente. El entrenamiento comprende el resto de archivos \texttt{.wav} de las diez clases que no aparecen en dichas listas, lo que garantiza que no haya solapamiento de hablantes ni clips entre particiones y que los resultados sean comparables con la literatura.
+
+\subsection{Representación tipo imagen y flujo reproducible}
+Cada clip se re-muestrea a mono PCM de 16\,kHz y se recorta o rellena a una ventana fija de un segundo antes del análisis espectral. En el cuaderno de entrenamiento (\texttt{proy1.ipynb}) la STFT utiliza \texttt{n\_fft}=1024, \texttt{hop\_length}=256 y \texttt{n\_mels}=128; el mel-espectrograma en escala logarítmica se normaliza por muestra y se re-escala espacialmente a $128 \times 128$, produciendo tensores de forma $(1,128,128)$ compatibles con las entradas descritas en las Tablas~\ref{tab:arquitectura} y~\ref{tab:arquitectura_b}. Herramientas auxiliares del repositorio documentan además un contrato de preprocesamiento alternativo (p.\,ej.\ otros tamaños de FFT) orientado a paridad con tiempo de ejecución ligero; cualquier despliegue debe fijar un único contrato y ceñirse a él de extremo a extremo.
+
+La reproducibilidad se apoya en la semilla global 42 (v\'ease el control de aleatoriedad en la siguiente secci\'on), en el uso determinista de las listas oficiales de validaci\'on y prueba y en la trazabilidad de hiperpar\'ametros y curvas en Weights \& Biases.
 
 \section{Diseño de arquitectura de IA}
 
@@ -145,6 +168,45 @@ Dropout ($p=0.2$) + Linear ($1280 \to 10$) & $(B, 10)$ \\
 Del mismo modo que en el modelo A, se adoptó como función de pérdida la \textit{Cross-Entropy Loss} al ser la más robusta para clases multivariadas. Respecto a la optimización, se ajustó al uso del algoritmo \texttt{Adam}, manteniendo ratios controlados bajo reducción (\textit{Weight Decay} y un programa de control \texttt{ReduceLROnPlateau}) aprovechando implementaciones de cálculo por precisión geométrica (\texttt{torch.amp}) para reducir la memoria total GPU.
 
 \section{Análisis y comparación de resultados}
+
+\subsection{Registro de experimentos con Weights \& Biases}
+Para cumplir con la rúbrica de trazabilidad, cada una de las doce corridas de entrenamiento se instrumentó con Weights \& Biases (W\&B) \cite{wandb}: por época se registraron, entre otras, la pérdida de entrenamiento, la exactitud y el F1 macro en validación, y al finalizar el entrenamiento las métricas agregadas en el conjunto de prueba junto con la matriz de confusión como imagen. Los proyectos y tableros permiten comparar curvas entre configuraciones y entre variantes con y sin aumentación.
+
+En el cuaderno de entrenamiento, las corridas de ambos modelos se registraron bajo el mismo proyecto W\&B \url{https://wandb.ai/fabriciomenamejia-tec-costa-rica/speech-commands-model-a}, diferenciadas por el nombre de cada \textit{run} (p.\,ej.\ \texttt{modelo-a-raw-config1}, \texttt{modelo-b-augmented-config2}).
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/wandb_dashboard_overview.png}}
+\caption{Vista del proyecto en Weights \& Biases: métricas por corrida (captura a incorporar).}
+\label{fig:wandb}
+\end{figure}
+
+La Tabla~\ref{tab:doce_runs} consolida en una sola vista los resultados de \textit{test} de los doce entrenamientos (dos arquitecturas $\times$ dos regímenes de datos $\times$ tres configuraciones de hiperparámetros), alineados con las tablas detalladas en las subsecciones posteriores.
+
+\begin{table*}[t]
+\caption{Métricas en el conjunto de prueba: las doce corridas experimentales.}
+\label{tab:doce_runs}
+\centering
+{\footnotesize
+\begin{tabular}{@{}lllccc@{}}
+\toprule
+\textbf{Modelo} & \textbf{Datos} & \textbf{Cfg} & \textbf{Accuracy} & \textbf{F1 macro} & \textbf{Loss} \\
+\midrule
+A (LeNet-5) & crudos & 1 & 0.6388 & 0.6344 & 1.0522 \\
+A (LeNet-5) & crudos & 2 & 0.8883 & 0.8880 & 0.3475 \\
+A (LeNet-5) & crudos & 3 & 0.7074 & 0.7034 & 0.8022 \\
+A (LeNet-5) & aumentados & 1 & 0.8271 & 0.8262 & 0.5050 \\
+A (LeNet-5) & aumentados & 2 & 0.8322 & 0.8316 & 0.4863 \\
+A (LeNet-5) & aumentados & 3 & 0.8016 & 0.8004 & 0.5796 \\
+B (MobileNetV2) & crudos & 1 & 0.9592 & 0.9590 & 0.1826 \\
+B (MobileNetV2) & crudos & 2 & 0.9552 & 0.9551 & 0.2073 \\
+B (MobileNetV2) & crudos & 3 & 0.9633 & 0.9631 & 0.1430 \\
+B (MobileNetV2) & aumentados & 1 & 0.9497 & 0.9493 & 0.2317 \\
+B (MobileNetV2) & aumentados & 2 & 0.9435 & 0.9430 & 0.2534 \\
+B (MobileNetV2) & aumentados & 3 & 0.9507 & 0.9503 & 0.1523 \\
+\bottomrule
+\end{tabular}
+}
+\end{table*}
 
 \subsection{Modelo A: Datos crudos}
 
@@ -374,11 +436,55 @@ En este escenario de espectrogramas alterados artificialmente, la \textbf{Config
 \label{fig:matriz_b_aug}
 \end{figure}
 
-Con una matriz que expone una solidez diagonal excelente, las falsas activaciones se diluyen casi perfectamente a través de las distintas voces de los comandos. El rediseño estructural hacia MobileNetV2 en conjunción con lotes agresivos y aumentaciones sonoras logra clasificar audios densamente corrompidos, validando por completo su elección como arquitectura definitiva a ser portada para los dispositivos móviles con ONNX.
+Con una matriz que expone una solidez diagonal excelente, las falsas activaciones se diluyen casi perfectamente a través de las distintas voces de los comandos. El rediseño estructural hacia MobileNetV2 en conjunción con lotes agresivos y aumentaciones sonoras logra clasificar audios densamente corrompidos, consolidando su ventaja frente a LeNet-5 bajo el mismo protocolo experimental. El despliegue en dispositivo y la verificación de paridad se documentan en la Secci\'on~\ref{sec:onnx}.
+
+\section{Exportaci\'on ONNX, paridad y aplicaci\'on m\'ovil}
+\label{sec:onnx}
+
+\subsection{Congelaci\'on del modelo y exportaci\'on}
+Antes de exportar, el modelo se coloca en modo evaluaci\'on (\texttt{model.eval()}) para desactivar el comportamiento estoc\'astico de capas como \textit{dropout} y \textit{batch normalization} en entrenamiento, y se congelan los pesos resultantes del mejor punto seg\'un validaci\'on. La exportaci\'on a ONNX se realiza con \texttt{torch.onnx.export} sobre un tensor de entrada ficticio de tipo \texttt{float32} y forma \texttt{(1,1,128,128)} en convenci\'on NCHW, alineada con las entradas descritas en las Tablas~\ref{tab:arquitectura} y~\ref{tab:arquitectura_b}. El archivo \texttt{.onnx} queda versionado junto con los hiperpar\'ametros del mel y del entrenamiento para trazabilidad.
+
+\subsection{Comprobaci\'on de paridad frente a PyTorch}
+La paridad num\'erica se verifica alimentando al modelo PyTorch y al sesi\'on ONNX Runtime con el \emph{mismo} tensor de entrada (idealmente obtenido del mismo WAV tras el preprocesamiento bit-exacto). Se comparan los logits: se reporta el m\'aximo error absoluto por componente y se comprueba que el \texttt{argmax} coincida en un conjunto de clips de prueba. La Fig.~\ref{fig:onnx_parity} ilustra el tipo de evidencia esperada (curva o tabla de errores); si el error supera un umbral peque\~no fijado por el equipo, se revisa la pila de operadores soportados por ONNX Runtime o diferencias de redondeo en la STFT.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/onnx_export_parity_error.png}}
+\caption{Evidencia de paridad PyTorch vs ONNX (figura a incorporar): error por componente o m\'aximo $|\Delta|$ en logits.}
+\label{fig:onnx_parity}
+\end{figure}
+
+\subsection{ONNX Runtime Mobile y contrato de preprocesamiento}
+En Android se a\~nade la dependencia de ONNX Runtime Mobile al m\'odulo de la aplicaci\'on, se empaqueta el \texttt{.onnx} bajo \texttt{assets/} y se crea una sesi\'on de inferencia en CPU (o acelerador si se configura). El preprocesamiento en Kotlin o C++ debe reproducir exactamente el pipeline descrito al inicio de este informe (audio mono 16\,kHz, ventana de 1\,s, par\'ametros STFT/mel del cuaderno de entrenamiento y reescalado a $128 \times 128$). Un checklist de contrato orientado a despliegue (PCM16, ventana Hann, \textit{hop}, banco mel HTK, normalizaci\'on por muestra, etc.) se documenta en el c\'odigo auxiliar del repositorio para evitar desviaciones silenciosas entre entrenamiento e inferencia.
+
+\subsection{Coherencia salida--acciones en la interfaz}
+La salida del clasificador es un vector de diez logits; el \'indice del m\'aximo se mapea a la etiqueta lexica y de ah\'i a acciones de navegaci\'on o de control del hogar simulado (p.\,ej.\ conmutar dispositivos o rutinas). La aplicaci\'on de referencia est\'a implementada en Jetpack Compose \cite{jetpack_compose}; en la versi\'on actual del repositorio la secuencia de comandos se demuestra mediante una rutina de prueba programada mientras se completa la integraci\'on con captura de audio (\texttt{MediaRecorder} \cite{android_mediarecorder}) y la sesi\'on ONNX en el hilo de interfaz. La Fig.~\ref{fig:android_onnx} reserva el espacio para una captura de pantalla una vez enlazada la inferencia en tiempo real.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\linewidth]{images/android_onnx_runtime_screenshot.png}}
+\caption{Aplicaci\'on Android: inferencia o demo de comandos (captura a incorporar).}
+\label{fig:android_onnx}
+\end{figure}
+
+\section{Conclusiones}
+
+Se abord\'o el reconocimiento de diez comandos de voz sobre \textit{Speech Commands} v0.02 con partici\'on oficial train/val/test y representaci\'on mel reescalada a $128 \times 128$. Doce entrenamientos (dos arquitecturas, datos crudos o aumentados, tres configuraciones de optimizador y lote) mostraron que MobileNetV2 supera de forma sostenida a LeNet-5: la mejor exactitud en prueba ($0.9633$) y F1 macro ($0.9631$) se obtuvieron con el Modelo B en datos crudos y Configuraci\'on~3 (Tabla~\ref{tab:doce_runs}). La aumentaci\'on mejor\'o la robustez perceptual del Modelo A pero no igual\'o al Modelo B; en MobileNetV2 la aumentaci\'on redujo levemente la m\'etrica frente a crudos, fen\'omeno compatible con regularizaci\'on m\'as agresiva o con un techo ya alto del modelo base.
+
+Desde el criterio m\'ovil, MobileNetV2 ofrece un mejor equilibrio esperado entre precisi\'on y coste computacional que LeNet-5 con mayor profundidad de extracci\'on; el modelo seleccionado para despliegue debe ser el que maximice la m\'etrica acordada en validaci\'on/prueba sujeto a restricciones de latencia, tama\~no del archivo ONNX y memoria RAM en el terminal. La trazabilidad en Weights \& Biases aporta evidencia auditable de cada corrida.
+
+Como trabajo futuro queda cerrar el ciclo con exportaci\'on ONNX versionada, pruebas de paridad sistem\'aticas en dispositivo y sustituir la demo programada por inferencia continua sobre el micr\'ofono con el mismo contrato de preprocesamiento descrito en este informe.
 
 \section{Referencias}
 
-\begin{thebibliography}{00}
+\begin{thebibliography}{99}
+
+\bibitem{specaugment}
+D.~S. Park, W.~Chan, Y.~Zhang, C.-C. Chiu, B.~Zoph, E.~D. Cubuk, and Q.~V. Le, ``SpecAugment: A Simple Data Augmentation Method for Automatic Speech Recognition,'' in \emph{Proc. INTERSPEECH}, 2019, pp.~2613--2617.
+
+\bibitem{onnxruntime}
+ONNX Runtime contributors, ``ONNX Runtime,'' 2026. [Online]. Available: \url{https://onnxruntime.ai/}. [Accessed: May 4, 2026].
+
+\bibitem{wandb}
+L.~Biewald, ``Experiment Tracking with Weights and Biases,'' Weights \& Biases, San Francisco, CA, USA, 2020. [Online]. Available: \url{https://wandb.com/}. [Accessed: May 4, 2026].
 
 \bibitem{tensorflow_lite_android}
 TensorFlow, ``TensorFlow Lite,'' 2026. [Online]. Available: \url{https://www.tensorflow.org/lite/guide}. [Accessed: May 2, 2026].
