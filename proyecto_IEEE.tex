@@ -5,6 +5,7 @@
 \usepackage{graphicx}
 \usepackage{textcomp}
 \usepackage{xcolor}
+\usepackage{subcaption}
 \usepackage{url}
 \usepackage{hyperref}
 \usepackage{booktabs} % Para mejores tablas
@@ -227,7 +228,7 @@ En el cuaderno de entrenamiento, las corridas de ambos modelos se registraron ba
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\linewidth]{images/wandb_dashboard_overview.png}}
-\caption{Vista del proyecto en Weights \& Biases: métricas por corrida (captura a incorporar).}
+\caption{Vista del proyecto en Weights \& Biases: métricas por corrida.}
 \label{fig:wandb}
 \end{figure}
 
@@ -500,7 +501,7 @@ La paridad num\'erica se verifica alimentando al modelo PyTorch y al sesi\'on ON
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\linewidth]{images/onnx_export_parity_error.png}}
-\caption{Evidencia de paridad PyTorch vs ONNX (figura a incorporar): error por componente o m\'aximo $|\Delta|$ en logits.}
+\caption{Evidencia de paridad PyTorch vs ONNX: error por componente o m\'aximo $|\Delta|$ en logits.}
 \label{fig:onnx_parity}
 \end{figure}
 
@@ -511,8 +512,16 @@ En Android se a\~nade la dependencia de ONNX Runtime Mobile al m\'odulo de la ap
 La salida del clasificador es un vector de diez logits; el \'indice del m\'aximo se mapea a la etiqueta lexica y de ah\'i a acciones de navegaci\'on o de control del hogar simulado (p.\,ej.\ conmutar dispositivos o rutinas). La aplicaci\'on de referencia est\'a implementada en Jetpack Compose \cite{jetpack_compose}; en la versi\'on actual del repositorio la secuencia de comandos se demuestra mediante una rutina de prueba programada mientras se completa la integraci\'on con captura de audio (\texttt{MediaRecorder} \cite{android_mediarecorder}) y la sesi\'on ONNX en el hilo de interfaz. La Fig.~\ref{fig:android_onnx} reserva el espacio para una captura de pantalla una vez enlazada la inferencia en tiempo real.
 
 \begin{figure}[htbp]
-\centerline{\includegraphics[width=\linewidth]{images/android_onnx_runtime_screenshot.png}}
-\caption{Aplicaci\'on Android: inferencia o demo de comandos (captura a incorporar).}
+\centering
+\begin{subfigure}{0.48\linewidth}
+  \includegraphics[width=\linewidth]{images/android_demo_home_dashboard.png}
+  \caption{Home (Devices).}
+\end{subfigure}\hfill
+\begin{subfigure}{0.48\linewidth}
+  \includegraphics[width=\linewidth]{images/android_demo_routines.png}
+  \caption{Routines.}
+\end{subfigure}
+\caption{Aplicaci\'on Android: demo de la interfaz para dispositivos y rutinas.}
 \label{fig:android_onnx}
 \end{figure}
 
