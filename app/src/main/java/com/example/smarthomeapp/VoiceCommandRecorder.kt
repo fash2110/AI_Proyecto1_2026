@@ -179,7 +179,6 @@ class VoiceCommandRecorder(
         val confidence = probs[bestIdx]
         Log.d(TAG, "class=$bestIdx confidence=${"%.3f".format(confidence)}")
 
-        if (confidence < CONFIDENCE_THRESHOLD) { Log.d(TAG, "Low confidence – ignored"); return@withContext null }
         val word = LABEL_TO_COMMAND[bestIdx]?.name ?: "UNKNOWN"
 
         if (confidence < CONFIDENCE_THRESHOLD) {
