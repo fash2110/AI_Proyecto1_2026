@@ -1,11 +1,18 @@
 package com.example.smarthomeapp
 
+import android.Manifest
 import android.os.Bundle
-import android.speech.tts.Voice
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -13,71 +20,70 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
+import androidx.compose.runtime.snapshotFlow
 import com.example.smarthomeapp.ui.theme.SmartHomeAppTheme
-import kotlinx.coroutines.delay
-import android.util.Log
-import androidx.compose.foundation.shape.CircleShape
+import kotlinx.coroutines.launch
 
-data class Device(
-    val name: String,
-    val description: String,
-    var isOn: Boolean,
-    var isSensible: Boolean
-)
-
-data class Routines(
-    val name: String,
-    val description: String,
-    var isOn: Boolean
-)
 class MainActivity : ComponentActivity() {
+
+    private lateinit var recorder: VoiceCommandRecorder
+    private lateinit var navigationManager: NavigationManager
+
+    private val requestMicPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startListening()
+            } else {
+                Log.w("MainActivity", "Microphone permission denied")
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+        // Issue 6 fix: enableEdgeToEdge must be first, before any view/state setup
         enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+
+        navigationManager = NavigationManager(columns = 2)
+        recorder = VoiceCommandRecorder(this, navigationManager)
+        recorder.loadModel()
+
+        requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+
         setContent {
             SmartHomeAppTheme {
-                SmartHomeAppApp()
+                SmartHomeAppApp(navigationManager)
             }
         }
     }
-}
 
-//TODO: DEMO de acciones, eliminar cuando se integre con modelo
-suspend fun runVoiceDemo(
-    navigationManager: NavigationManager
-) {
-    val commands = listOf(
-        VoiceCommand.DOWN,
-        VoiceCommand.GO,
-        VoiceCommand.STOP,
-        VoiceCommand.YES,
-        VoiceCommand.DOWN,
-        VoiceCommand.ON,
-        VoiceCommand.NO,
-        VoiceCommand.DOWN,
-        VoiceCommand.RIGHT,
-        VoiceCommand.YES,
-        VoiceCommand.RIGHT,
-        VoiceCommand.YES,
-        VoiceCommand.GO,
-        VoiceCommand.DOWN,
-        VoiceCommand.GO,
-        VoiceCommand.STOP
-    )
+    private fun startListening() {
+        lifecycleScope.launch {
+            snapshotFlow { navigationManager.isListening }
+                .collect { listening ->
+                    if (listening) {
+                        @Suppress("MissingPermission")
+                        recorder.startContinuousListening()
+                    } else {
+                        recorder.stopContinuousListening()
+                    }
+                }
+        }
+    }
 
-    for (command in commands) {
-        navigationManager.handle(command)
-        Log.d("demo", "Executing: $command")
-        delay(2000)
+    override fun onDestroy() {
+        super.onDestroy()
+        recorder.release()
     }
 }
 
@@ -89,36 +95,28 @@ enum class AppDestinations(
     ROUTINES("Routines", R.drawable.ic_routines)
 }
 
+// Issue 4 fix: no default parameter — preview passes its own instance explicitly
 @Composable
-fun SmartHomeAppApp() {
-    val navigationManager = remember { NavigationManager(columns = 2) }
-
-    // TEMP demo
-    LaunchedEffect(Unit) {
-        runVoiceDemo(navigationManager)
-    }
-
+fun SmartHomeAppApp(navigationManager: NavigationManager) {
     Scaffold(
         bottomBar = {
-            BottomBar(
-                currentDestination = navigationManager.currentDestination,
-                onNavigate = { }, // navigation now controlled by manager
-                isListening = navigationManager.isListening,
-                onToggleListening = {
-                    navigationManager.handle(VoiceCommand.YES)
-                },
-                navigationManager = navigationManager
-            )
+            Column {
+                PredictionBanner(navigationManager.lastPrediction)
+                // Issue 3 fix: onNavigate and onToggleListening removed — BottomBar
+                // drives navigation directly through navigationManager
+                BottomBar(
+                    currentDestination = navigationManager.currentDestination,
+                    isListening = navigationManager.isListening,
+                    navigationManager = navigationManager
+                )
+            }
         }
     ) { innerPadding ->
-
         when (navigationManager.currentDestination) {
-
             AppDestinations.DEVICES -> DevicesScreen(
                 modifier = Modifier.padding(innerPadding),
                 navigationManager = navigationManager
             )
-
             AppDestinations.ROUTINES -> RoutinesScreen(
                 modifier = Modifier.padding(innerPadding),
                 navigationManager = navigationManager
@@ -127,6 +125,51 @@ fun SmartHomeAppApp() {
     }
     navigationManager.pendingConfirmation?.let {
         ConfirmationDialog(navigationManager)
+    }
+}
+
+@Composable
+fun PredictionBanner(prediction: PredictionResult?) {
+    // Issue 7 fix: intermediate `visible` variable inlined
+    AnimatedVisibility(
+        visible = prediction != null,
+        enter = fadeIn() + slideInVertically { it },
+        exit  = fadeOut() + slideOutVertically { it }
+    ) {
+        prediction ?: return@AnimatedVisibility
+        val performed = prediction.performed
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1A1F2E))
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = prediction.word,
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${"%.0f".format(prediction.confidence * 100)}%",
+                color = Color.LightGray,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.weight(1f)
+            )
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = if (performed) Color(0xFF1B5E20) else Color(0xFF4A1A1A)
+            ) {
+                Text(
+                    text = if (performed) "performed" else "ignored",
+                    color = if (performed) Color(0xFF69F0AE) else Color(0xFFFF5252),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
     }
 }
 
@@ -173,10 +216,7 @@ fun ListeningIndicator(
                     modifier = Modifier
                         .width(4.dp)
                         .height(
-                            if (isListening)
-                                heights[index].value.dp
-                            else
-                                6.dp
+                            if (isListening) heights[index].value.dp else 6.dp
                         )
                         .background(
                             if (isListening) Color.White else Color.Gray,
@@ -196,12 +236,11 @@ fun ListeningIndicator(
     }
 }
 
+// Issue 3 fix: removed unused onNavigate and onToggleListening parameters
 @Composable
 fun BottomBar(
     currentDestination: AppDestinations,
-    onNavigate: (AppDestinations) -> Unit,
     isListening: Boolean,
-    onToggleListening: () -> Unit,
     navigationManager: NavigationManager
 ) {
     val focusedBottom = navigationManager.focusedBottomBarIndex()
@@ -209,7 +248,6 @@ fun BottomBar(
     NavigationBar(
         containerColor = Color(0xFF1A1F2E)
     ) {
-
         NavigationBarItem(
             selected = currentDestination == AppDestinations.DEVICES,
             onClick = { navigationManager.selectDestination(AppDestinations.DEVICES) },
@@ -250,18 +288,14 @@ fun BottomBar(
 }
 
 @Composable
-fun ConfirmationDialog(
-    navigationManager: NavigationManager
-) {
+fun ConfirmationDialog(navigationManager: NavigationManager) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.65f)),
         contentAlignment = Alignment.Center
     ) {
-        Card(
-            shape = RoundedCornerShape(20.dp)
-        ) {
+        Card(shape = RoundedCornerShape(20.dp)) {
             Column(
                 Modifier.padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -270,15 +304,14 @@ fun ConfirmationDialog(
                     "Are you sure to handle this device?",
                     style = MaterialTheme.typography.headlineSmall
                 )
-
                 Spacer(Modifier.height(12.dp))
-
                 Text("Say YES to confirm")
                 Text("Say NO to cancel")
             }
         }
     }
 }
+
 @Composable
 fun DevicesScreen(
     modifier: Modifier = Modifier,
@@ -310,9 +343,7 @@ fun DevicesScreen(
                 DeviceCard(
                     device = device,
                     isFocused = focusedIndex == index,
-                    onToggle = {
-                        navigationManager.toggleDevice(index)
-                    }
+                    onToggle = { navigationManager.toggleDevice(index) }
                 )
             }
         }
@@ -325,10 +356,7 @@ fun DeviceCard(
     isFocused: Boolean,
     onToggle: () -> Unit
 ) {
-    Box(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-
+    Box(modifier = Modifier.fillMaxWidth()) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -339,34 +367,17 @@ fun DeviceCard(
                 ),
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(
-                containerColor =
-                    if (device.isOn) Color(0xFF1C2A3A)
-                    else Color(0xFF151B2C)
+                containerColor = if (device.isOn) Color(0xFF1C2A3A) else Color(0xFF151B2C)
             )
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp)
-            ) {
-                Text(
-                    text = device.name,
-                    color = Color.White
-                )
-
-                Text(
-                    text = device.description,
-                    color = Color.Gray
-                )
-
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(text = device.name, color = Color.White)
+                Text(text = device.description, color = Color.Gray)
                 Spacer(Modifier.height(12.dp))
-
-                Switch(
-                    checked = device.isOn,
-                    onCheckedChange = { onToggle() }
-                )
+                Switch(checked = device.isOn, onCheckedChange = { onToggle() })
             }
         }
 
-        // Warning badge overlay
         if (device.isSensible) {
             Surface(
                 modifier = Modifier
@@ -377,10 +388,7 @@ fun DeviceCard(
             ) {
                 Text(
                     text = "!",
-                    modifier = Modifier.padding(
-                        horizontal = 8.dp,
-                        vertical = 2.dp
-                    ),
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                     color = Color.White,
                     style = MaterialTheme.typography.labelLarge
                 )
@@ -389,51 +397,6 @@ fun DeviceCard(
     }
 }
 
-@Composable
-fun RoutineCard(
-    routine: Routines,
-    isFocused: Boolean,
-    onToggle: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(
-                width = if (isFocused) 2.dp else 0.dp,
-                color = Color.Cyan,
-                shape = RoundedCornerShape(20.dp)
-            ),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor =
-                if (routine.isOn) Color(0xFF20354A)
-                else Color(0xFF151B2C)
-        )
-    ) {
-        Column(
-            Modifier.padding(16.dp)
-        ) {
-            Text(
-                routine.name,
-                color = Color.White
-            )
-
-            Text(
-                routine.description,
-                color = Color.Gray
-            )
-
-            Spacer(Modifier.height(12.dp))
-
-            Switch(
-                checked = routine.isOn,
-                onCheckedChange = {
-                    onToggle()
-                }
-            )
-        }
-    }
-}
 @Composable
 fun RoutinesScreen(
     modifier: Modifier = Modifier,
@@ -465,19 +428,49 @@ fun RoutinesScreen(
                 RoutineCard(
                     routine = routine,
                     isFocused = focusedIndex == index,
-                    onToggle = {
-                        navigationManager.toggleRoutine(index)
-                    }
+                    onToggle = { navigationManager.toggleRoutine(index) }
                 )
             }
         }
     }
 }
 
+@Composable
+fun RoutineCard(
+    routine: Routines,
+    isFocused: Boolean,
+    onToggle: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = if (isFocused) 2.dp else 0.dp,
+                color = Color.Cyan,
+                shape = RoundedCornerShape(20.dp)
+            ),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (routine.isOn) Color(0xFF20354A) else Color(0xFF151B2C)
+        )
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(routine.name, color = Color.White)
+            Text(routine.description, color = Color.Gray)
+            Spacer(Modifier.height(12.dp))
+            Switch(
+                checked = routine.isOn,
+                onCheckedChange = { onToggle() }
+            )
+        }
+    }
+}
+
+// Issue 4 fix: preview passes an explicit NavigationManager instead of relying on default param
 @Preview(showBackground = true)
 @Composable
 fun PreviewApp() {
     SmartHomeAppTheme {
-        SmartHomeAppApp()
+        SmartHomeAppApp(NavigationManager(columns = 2))
     }
 }
