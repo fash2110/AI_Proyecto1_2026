@@ -5,6 +5,7 @@
 \usepackage{graphicx}
 \usepackage{textcomp}
 \usepackage{xcolor}
+\usepackage{subcaption}
 \usepackage{url}
 \usepackage{hyperref}
 \usepackage{booktabs} % Para mejores tablas
@@ -56,7 +57,7 @@ Se utilizó el conjunto \textit{Speech Commands} v0.02 distribuido por TensorFlo
 La partición oficial del corpus se respeta mediante los archivos \texttt{validation\_list.txt} y \texttt{testing\_list.txt} incluidos en la raíz del dataset: las rutas listadas en ellos definen los conjuntos de validación y de prueba, respectivamente. El entrenamiento comprende el resto de archivos \texttt{.wav} de las diez clases que no aparecen en dichas listas, lo que garantiza que no haya solapamiento de hablantes ni clips entre particiones y que los resultados sean comparables con la literatura.
 
 \subsection{Representación tipo imagen y flujo reproducible}
-Cada clip se re-muestrea a mono PCM de 16\,kHz y se recorta o rellena a una ventana fija de un segundo antes del análisis espectral. En el cuaderno de entrenamiento (\texttt{proy1.ipynb}) la STFT utiliza \texttt{n\_fft}=1024, \texttt{hop\_length}=256 y \texttt{n\_mels}=128; el mel-espectrograma en escala logarítmica se normaliza por muestra y se re-escala espacialmente a $128 \times 128$, produciendo tensores de forma $(1,128,128)$ compatibles con las entradas descritas en las Tablas~\ref{tab:arquitectura} y~\ref{tab:arquitectura_b}. Herramientas auxiliares del repositorio documentan además un contrato de preprocesamiento alternativo (p.\,ej.\ otros tamaños de FFT) orientado a paridad con tiempo de ejecución ligero; cualquier despliegue debe fijar un único contrato y ceñirse a él de extremo a extremo.
+Cada clip se re-muestrea a mono PCM de 16\,kHz y se recorta o rellena a una ventana fija de 1\,s (16\,000 muestras) antes del análisis espectral. Para asegurar consistencia entre entrenamiento y despliegue m\'ovil, se fija un \textbf{\'unico contrato de preprocesamiento} (usado para exportaci\'on ONNX y para inferencia en Android): STFT con ventana Hann de 25\,ms (\texttt{win\_length}=400), \texttt{n\_fft}=512 y \texttt{hop\_length}=160 (10\,ms); banco mel HTK de \texttt{n\_mels}=64 entre 20--8000\,Hz; y mel-espectrograma en escala logar\'{\i}tmica \(\log(\text{mel}+\varepsilon)\). El mapa \((64\times101)\) resultante se re-escala bilinealmente a \(128\times128\) y se normaliza para formar el tensor de entrada en NCHW \texttt{(1,1,128,128)}, compatible con las entradas descritas en las Tablas~\ref{tab:arquitectura} y~\ref{tab:arquitectura_b}. Este contrato se implementa de manera equivalente en el cuaderno de entrenamiento (\texttt{proy1.ipynb}) y en la aplicaci\'on m\'ovil, evitando discrepancias silenciosas entre PyTorch y ONNX Runtime Mobile.
 
 La reproducibilidad se apoya en la semilla global 42 (v\'ease el control de aleatoriedad en la siguiente secci\'on), en el uso determinista de las listas oficiales de validaci\'on y prueba y en la trazabilidad de hiperpar\'ametros y curvas en Weights \& Biases.
 
@@ -227,7 +228,7 @@ En el cuaderno de entrenamiento, las corridas de ambos modelos se registraron ba
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\linewidth]{images/wandb_dashboard_overview.png}}
-\caption{Vista del proyecto en Weights \& Biases: métricas por corrida (captura a incorporar).}
+\caption{Vista del proyecto en Weights \& Biases: métricas por corrida.}
 \label{fig:wandb}
 \end{figure}
 
@@ -500,19 +501,29 @@ La paridad num\'erica se verifica alimentando al modelo PyTorch y al sesi\'on ON
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\linewidth]{images/onnx_export_parity_error.png}}
-\caption{Evidencia de paridad PyTorch vs ONNX (figura a incorporar): error por componente o m\'aximo $|\Delta|$ en logits.}
+\caption{Evidencia de paridad PyTorch vs ONNX: error por componente o m\'aximo $|\Delta|$ en logits.}
 \label{fig:onnx_parity}
 \end{figure}
 
 \subsection{ONNX Runtime Mobile y contrato de preprocesamiento}
-En Android se a\~nade la dependencia de ONNX Runtime Mobile al m\'odulo de la aplicaci\'on, se empaqueta el \texttt{.onnx} bajo \texttt{assets/} y se crea una sesi\'on de inferencia en CPU (o acelerador si se configura). El preprocesamiento en Kotlin o C++ debe reproducir exactamente el pipeline descrito al inicio de este informe (audio mono 16\,kHz, ventana de 1\,s, par\'ametros STFT/mel del cuaderno de entrenamiento y reescalado a $128 \times 128$). Un checklist de contrato orientado a despliegue (PCM16, ventana Hann, \textit{hop}, banco mel HTK, normalizaci\'on por muestra, etc.) se documenta en el c\'odigo auxiliar del repositorio para evitar desviaciones silenciosas entre entrenamiento e inferencia.
+En Android se a\~nadi\'o la dependencia de ONNX Runtime Mobile (\texttt{onnxruntime-android}) al m\'odulo de la aplicaci\'on y el modelo seleccionado se empaquet\'o como recurso local bajo \texttt{app/src/main/assets/} (archivo \texttt{modelo\_b\_config3.onnx}). En tiempo de ejecuci\'on, la aplicaci\'on crea una sesi\'on de inferencia en CPU a partir de dicho archivo y ejecuta la inferencia completamente \emph{offline} en el dispositivo, cumpliendo la restricci\'on del enunciado de no depender de APIs externas ni procesamiento remoto.
+
+El preprocesamiento se implement\'o en Kotlin de forma que replique el contrato de entrenamiento: captura de audio mono PCM a 16\,kHz en ventanas de 1\,s, c\'alculo de log mel-espectrograma, reescalado bilineal a $128\times128$, normalizaci\'on y empaquetado del tensor NCHW \texttt{(1,1,128,128)} antes de la invocaci\'on del modelo. Este contrato est\'a documentado en el c\'odigo y se mantuvo consistente con el pipeline usado en el cuaderno de entrenamiento para minimizar discrepancias entre entrenamiento e inferencia.
 
 \subsection{Coherencia salida--acciones en la interfaz}
-La salida del clasificador es un vector de diez logits; el \'indice del m\'aximo se mapea a la etiqueta lexica y de ah\'i a acciones de navegaci\'on o de control del hogar simulado (p.\,ej.\ conmutar dispositivos o rutinas). La aplicaci\'on de referencia est\'a implementada en Jetpack Compose \cite{jetpack_compose}; en la versi\'on actual del repositorio la secuencia de comandos se demuestra mediante una rutina de prueba programada mientras se completa la integraci\'on con captura de audio (\texttt{MediaRecorder} \cite{android_mediarecorder}) y la sesi\'on ONNX en el hilo de interfaz. La Fig.~\ref{fig:android_onnx} reserva el espacio para una captura de pantalla una vez enlazada la inferencia en tiempo real.
+La salida del clasificador es un vector de diez logits; el \'indice del m\'aximo se mapea a la etiqueta l\'exica y de ah\'i a acciones de navegaci\'on o de control del hogar simulado (p.\,ej.\ mover foco con \texttt{up/down/left/right}, confirmar con \texttt{yes/no}, conmutar dispositivos con \texttt{on/off} e iniciar/detener rutinas con \texttt{go/stop}). La aplicaci\'on est\'a implementada en Jetpack Compose \cite{jetpack_compose} como experiencia navegable; los comandos se generan a partir de inferencia local sobre el micr\'ofono y se despachan a un manejador de navegaci\'on/estado que traduce cada comando a cambios de foco, navegaci\'on entre pantallas y acciones sobre dispositivos o rutinas.
 
 \begin{figure}[htbp]
-\centerline{\includegraphics[width=\linewidth]{images/android_onnx_runtime_screenshot.png}}
-\caption{Aplicaci\'on Android: inferencia o demo de comandos (captura a incorporar).}
+\centering
+\begin{subfigure}{0.48\linewidth}
+  \includegraphics[width=\linewidth]{images/android_demo_home_dashboard.png}
+  \caption{Home (Devices).}
+\end{subfigure}\hfill
+\begin{subfigure}{0.48\linewidth}
+  \includegraphics[width=\linewidth]{images/android_demo_routines.png}
+  \caption{Routines.}
+\end{subfigure}
+\caption{Aplicaci\'on Android: demo de la interfaz para dispositivos y rutinas.}
 \label{fig:android_onnx}
 \end{figure}
 
@@ -525,6 +536,7 @@ El Modelo A (LeNet-5) alcanz\'o su mejor desempe\~no con Configuraci\'on~1 en da
 Desde el criterio m\'ovil, MobileNetV2 ofrece un mejor equilibrio entre precisi\'on y coste computacional que LeNet-5; el modelo seleccionado para despliegue debe maximizar la m\'etrica acordada en validaci\'on/prueba sujeto a restricciones de latencia, tama\~no del archivo ONNX y memoria RAM en el terminal. La trazabilidad en Weights \& Biases aporta evidencia auditable de cada corrida.
 
 Como trabajo futuro queda cerrar el ciclo con exportaci\'on ONNX versionada, pruebas de paridad sistem\'aticas en dispositivo y sustituir la demo programada por inferencia continua sobre el micr\'ofono con el mismo contrato de preprocesamiento descrito en este informe.
+Como trabajo futuro queda ampliar la evaluaci\'on en dispositivo (latencia, consumo y robustez bajo ruido) y endurecer las pruebas de paridad extremo a extremo (WAV$\to$tensor$\to$logits) sobre un conjunto m\'as grande de ejemplos, asegurando que el preprocesamiento m\'ovil permanezca bit-a-bit alineado con el contrato de entrenamiento.
 
 \section{Referencias}
 
