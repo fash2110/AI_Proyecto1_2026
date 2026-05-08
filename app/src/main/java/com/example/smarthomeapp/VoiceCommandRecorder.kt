@@ -15,6 +15,8 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import java.nio.FloatBuffer
 import kotlin.math.*
+import android.media.audiofx.NoiseSuppressor
+import android.media.audiofx.AutomaticGainControl
 
 /**
  * Records a 1-second audio clip from the microphone, converts it to a
@@ -82,7 +84,7 @@ class VoiceCommandRecorder(
         private const val MODEL_ASSET    = "modelo_b_config3.onnx"
 
         // Inference gates
-        private const val CONFIDENCE_THRESHOLD  = 0.70f
+        private const val CONFIDENCE_THRESHOLD  = 0.60f
         private const val SILENCE_RMS_THRESHOLD = 0.01f
 
         // Label → command  (AUTHORIZED_COMMANDS insertion order)
@@ -108,10 +110,6 @@ class VoiceCommandRecorder(
     @Volatile private var continueListening = false
 
     /* ── public API ───────────────────────────────────────────────────── */
-
-    /**
-     * Load the ONNX model from assets. Call once before recording.
-     */
     fun loadModel() {
         try {
             ortEnv = OrtEnvironment.getEnvironment()
@@ -123,11 +121,6 @@ class VoiceCommandRecorder(
         }
     }
 
-    /**
-     * Record one 1-second clip, run inference, dispatch the command.
-     * Must be called from a coroutine — suspends during recording.
-     * @return recognised [VoiceCommand] or null if silent / low-confidence.
-     */
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     suspend fun recordAndInfer(): VoiceCommand? = withContext(Dispatchers.IO) {
         if (!hasMicPermission()) { Log.w(TAG, "No microphone permission"); return@withContext null }
@@ -204,10 +197,6 @@ class VoiceCommandRecorder(
         command
     }
 
-    /**
-     * Continuous record-infer loop. Launch in a lifecycle-bound coroutine scope.
-     * Each iteration captures one non-overlapping 1-second window.
-     */
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     suspend fun startContinuousListening() {
         continueListening = true
@@ -230,11 +219,6 @@ class VoiceCommandRecorder(
     }
 
     /* ── audio capture ────────────────────────────────────────────────── */
-
-    /**
-     * Record [NUM_SAMPLES] PCM-16 samples and return float32 in [-1, 1].
-     * Short recordings are zero-padded (pad_end policy).
-     */
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     private fun captureAudio(): FloatArray? {
         val minBuf  = AudioRecord.getMinBufferSize(
@@ -243,7 +227,7 @@ class VoiceCommandRecorder(
         val bufSize = maxOf(minBuf, NUM_SAMPLES * Short.SIZE_BYTES)
 
         val rec = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
@@ -254,9 +238,21 @@ class VoiceCommandRecorder(
         }
 
         val raw  = ShortArray(NUM_SAMPLES)
+        val ns = if (NoiseSuppressor.isAvailable()) {
+            NoiseSuppressor.create(rec.audioSessionId).also { it.enabled = true }
+        } else null
+
+        val agc = if (AutomaticGainControl.isAvailable()) {
+            AutomaticGainControl.create(rec.audioSessionId).also { it.enabled = true }
+        } else null
+
         rec.startRecording()
         val read = rec.read(raw, 0, NUM_SAMPLES)
-        rec.stop(); rec.release()
+
+        rec.stop()
+        rec.release()
+        ns?.release()
+        agc?.release()
 
         if (read < NUM_SAMPLES) Log.w(TAG, "Short read: $read / $NUM_SAMPLES (zero-padded)")
 
@@ -264,18 +260,6 @@ class VoiceCommandRecorder(
     }
 
     /* ── spectrogram ──────────────────────────────────────────────────── */
-
-    /**
-     * Compute log mel-spectrogram matching [litert_parity.py]:
-     *
-     *  1. Reflect-pad by n_fft/2 on both sides (center=true).
-     *  2. Slice NUM_FRAMES Hann-windowed frames (win_length=400, zero-pad to n_fft=512).
-     *  3. Power spectrum via in-place FFT.
-     *  4. HTK mel filter bank (n_mels=64, 20–8000 Hz).
-     *  5. log(energy + 1e-6).
-     *
-     * Returns flat FloatArray [N_MELS × NUM_FRAMES], row-major.
-     */
     private fun computeLogMelSpectrogram(pcm: FloatArray): FloatArray {
         val pad    = N_FFT / 2                              // 256
         val padded = FloatArray(NUM_SAMPLES + 2 * pad)
@@ -329,11 +313,6 @@ class VoiceCommandRecorder(
         return out
     }
 
-    /**
-     * Bilinear resize of a [srcH × srcW] float image to [dstH × dstW].
-     * Replicates torchvision transforms.Resize bilinear mode.
-     * Input/output are flat row-major FloatArrays.
-     */
     private fun bilinearResize(
         src: FloatArray, srcH: Int, srcW: Int, dstH: Int, dstW: Int
     ): FloatArray {
@@ -375,10 +354,6 @@ class VoiceCommandRecorder(
     private fun hannWindow(size: Int) =
         FloatArray(size) { n -> (0.5 * (1.0 - cos(2.0 * PI * n / (size - 1)))).toFloat() }
 
-    /**
-     * In-place Cooley-Tukey radix-2 DIT FFT.
-     * [data] = interleaved real/imag doubles, length = 2 * n  (n must be power of 2).
-     */
     private fun fft(data: DoubleArray, n: Int) {
         var j = 0
         for (i in 1 until n) {
@@ -413,11 +388,6 @@ class VoiceCommandRecorder(
         }
     }
 
-    /**
-     * HTK-scale triangular mel filter bank.
-     * Bin mapping:  bin = floor((n_fft + 1) * hz / sample_rate)
-     * — identical to the formula in src/preprocess/mel.py.
-     */
     private fun buildHtkMelFilterBank(
         nMels: Int, fftBins: Int, sampleRate: Int, fMin: Double, fMax: Double
     ): Array<FloatArray> {
