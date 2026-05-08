@@ -232,6 +232,22 @@ En el cuaderno de entrenamiento, las corridas de ambos modelos se registraron ba
 \label{fig:wandb}
 \end{figure}
 
+\begin{figure}[htbp]
+\centering
+\begin{subfigure}{0.48\linewidth}
+  \includegraphics[width=\linewidth]{images/Grafica_Loss_Train_All.png}
+  \caption{Pérdida (loss) agregada durante entrenamiento.}
+  \label{fig:loss_all}
+\end{subfigure}\hfill
+\begin{subfigure}{0.48\linewidth}
+  \includegraphics[width=\linewidth]{images/Grafica_Accuracy_Train_All.png}
+  \caption{Exactitud (accuracy) agregada durante entrenamiento.}
+  \label{fig:acc_all}
+\end{subfigure}
+\caption{Curvas globales de entrenamiento: resumen del comportamiento de \textit{loss} y \textit{accuracy} a lo largo de las épocas para visualizar convergencia y estabilidad del proceso de aprendizaje de forma consolidada.}
+\label{fig:train_all}
+\end{figure}
+
 La Tabla~\ref{tab:doce_runs} consolida en una sola vista los resultados de \textit{test} de los doce entrenamientos (dos arquitecturas $\times$ dos regímenes de datos $\times$ tres configuraciones de hiperparámetros), alineados con las tablas detalladas en las subsecciones posteriores.
 
 \begin{table*}[t]
