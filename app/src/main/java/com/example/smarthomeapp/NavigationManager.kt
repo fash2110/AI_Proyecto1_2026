@@ -5,8 +5,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlin.math.min
 
-// Issue 8 fix: model data classes moved here from MainActivity — they belong
-// alongside the state that owns them, not in the Activity/UI file
 data class Device(
     val name: String,
     val description: String,
@@ -91,8 +89,6 @@ class NavigationManager(
 
     /* ---------- NAVIGATION STATE ---------- */
 
-    // Issue 10 fix: replace mutable backing fields + updateDeviceCount() with
-    // simple derived vals — count is always devices.size / routines.size
     val deviceCount  get() = devices.size
     val routineCount get() = routines.size
 
@@ -260,8 +256,6 @@ class NavigationManager(
         routines = routines.mapIndexed { i, r -> if (i == index) r.copy(isOn = !r.isOn) else r }
     }
 
-    // Issue 9 fix: startRoutine and stopRoutine changed to private — they are
-    // only ever called from startFocusedRoutine / stopFocusedRoutine internally
     private fun startRoutine(index: Int) {
         routines = routines.mapIndexed { i, r -> if (i == index) r.copy(isOn = true)  else r }
     }
@@ -335,12 +329,9 @@ class NavigationManager(
         Section.BOTTOM_BAR -> 0
     }
 
-    // Issue 12 fix: moved up next to other private helpers (was last in file)
     private fun currentSectionFromDestination(): Section = when (currentDestination) {
         AppDestinations.DEVICES  -> Section.DEVICES
         AppDestinations.ROUTINES -> Section.ROUTINES
     }
 
-    // Issue 11 fix: isConfirming() removed — it duplicated `pendingConfirmation != null`
-    // and was never called anywhere in the codebase
 }

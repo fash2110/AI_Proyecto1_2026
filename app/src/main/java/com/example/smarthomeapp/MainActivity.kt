@@ -50,7 +50,6 @@ class MainActivity : ComponentActivity() {
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Issue 6 fix: enableEdgeToEdge must be first, before any view/state setup
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
@@ -95,7 +94,6 @@ enum class AppDestinations(
     ROUTINES("Routines", R.drawable.ic_routines)
 }
 
-// Issue 4 fix: no default parameter — preview passes its own instance explicitly
 @Composable
 fun SmartHomeAppApp(navigationManager: NavigationManager) {
     Scaffold(
@@ -236,7 +234,6 @@ fun ListeningIndicator(
     }
 }
 
-// Issue 3 fix: removed unused onNavigate and onToggleListening parameters
 @Composable
 fun BottomBar(
     currentDestination: AppDestinations,
@@ -466,7 +463,6 @@ fun RoutineCard(
     }
 }
 
-// Issue 4 fix: preview passes an explicit NavigationManager instead of relying on default param
 @Preview(showBackground = true)
 @Composable
 fun PreviewApp() {
